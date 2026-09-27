@@ -1,0 +1,67 @@
+# Seed watchlist from Trading 212 CFD screenshots captured 2026-09-27.
+# Quotes in the screenshots are NOT stored here and are not a live feed.
+# kind/notes exist so Claude Code does not treat every symbol as a US listing.
+
+instruments:
+  - symbol: GOOG
+    name: Alphabet (Class C)
+    kind: equity
+    company_tag: alphabet
+    sort_order: 10
+  - symbol: GOOGL
+    name: Alphabet (Class A)
+    kind: equity
+    company_tag: alphabet
+    sort_order: 11
+  - symbol: AMZN
+    name: Amazon
+    kind: equity
+    sort_order: 20
+  - symbol: SKHY
+    name: SK hynix
+    kind: cfd
+    notes: Trading 212 CFD symbol, not necessarily the primary KR listing ticker.
+    sort_order: 30
+  - symbol: SPCX
+    name: SpaceX
+    kind: cfd
+    notes: Private company. T212 CFD product, not a public equity listing.
+    sort_order: 40
+  - symbol: AAPL
+    name: Apple
+    kind: equity
+    sort_order: 50
+  - symbol: AMD
+    name: Advanced Micro Devices
+    kind: equity
+    sort_order: 60
+  - symbol: MSFT
+    name: Microsoft
+    kind: equity
+    sort_order: 70
+  - symbol: DELL
+    name: Dell Technologies
+    kind: equity
+    sort_order: 80
+  - symbol: TSLA
+    name: Tesla
+    kind: equity
+    sort_order: 90
+  - symbol: META
+    name: Meta Platforms
+    kind: equity
+    sort_order: 100
+  - symbol: NVDA
+    name: Nvidia
+    kind: equity
+    sort_order: 110
+  - symbol: CRUDE
+    name: Crude Oil-16Oct26
+    kind: commodity
+    notes: Dated WTI-style future/CFD (16 Oct 2026), not a company.
+    sort_order: 200
+  - symbol: TECH100
+    name: USA Tech 100
+    kind: index
+    notes: Nasdaq-100 style index CFD.
+    sort_order: 210
