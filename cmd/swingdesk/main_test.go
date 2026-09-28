@@ -2,20 +2,36 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/hsk-kr/swingdesk/internal/ui"
 )
 
-func TestRunPrintsPaths(t *testing.T) {
+func noUI(t *testing.T) startUI {
+	return func(ui.Model) error {
+		t.Error("UI should not start")
+		return nil
+	}
+}
+
+func tempConfig(t *testing.T, body string) (string, string) {
+	t.Helper()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(cfgPath, []byte("data_dir: "+dir+"/data\n"), 0o644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte(body+"data_dir: "+dir+"/data\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	return dir, cfgPath
+}
+
+func TestRunPrintsPaths(t *testing.T) {
+	dir, cfgPath := tempConfig(t, "")
 	var out bytes.Buffer
-	if err := run([]string{"-config", cfgPath}, &out); err != nil {
+	if err := run([]string{"-config", cfgPath, "-paths"}, &out, noUI(t)); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	for _, want := range []string{cfgPath, dir + "/data/swingdesk.db", "every 30 min", "instruments: 14"} {
@@ -25,31 +41,48 @@ func TestRunPrintsPaths(t *testing.T) {
 	}
 }
 
-func TestRunBadConfig(t *testing.T) {
-	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(cfgPath, []byte("refresh_minutes: 0\n"), 0o644); err != nil {
-		t.Fatal(err)
+func TestRunStartsUI(t *testing.T) {
+	_, cfgPath := tempConfig(t, "")
+	started := false
+	err := run([]string{"-config", cfgPath}, &bytes.Buffer{}, func(ui.Model) error {
+		started = true
+		return nil
+	})
+	if err != nil || !started {
+		t.Fatalf("started=%v err=%v", started, err)
 	}
-	if err := run([]string{"-config", cfgPath}, &bytes.Buffer{}); err == nil {
+}
+
+func TestRunPropagatesUIError(t *testing.T) {
+	_, cfgPath := tempConfig(t, "")
+	boom := errors.New("boom")
+	if err := run([]string{"-config", cfgPath}, &bytes.Buffer{}, func(ui.Model) error { return boom }); !errors.Is(err, boom) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestRunBadConfig(t *testing.T) {
+	_, cfgPath := tempConfig(t, "refresh_minutes: 0\n")
+	if err := run([]string{"-config", cfgPath}, &bytes.Buffer{}, noUI(t)); err == nil {
 		t.Fatal("expected error")
 	}
 }
 
 func TestRunHelpExitsCleanly(t *testing.T) {
-	if err := run([]string{"-h"}, &bytes.Buffer{}); err != nil {
+	if err := run([]string{"-h"}, &bytes.Buffer{}, noUI(t)); err != nil {
 		t.Fatalf("run -h: %v", err)
 	}
 }
 
 func TestRunRejectsPositionalArgs(t *testing.T) {
-	if err := run([]string{"extra"}, &bytes.Buffer{}); err == nil {
+	if err := run([]string{"extra"}, &bytes.Buffer{}, noUI(t)); err == nil {
 		t.Fatal("expected error")
 	}
 }
 
 func TestRunMissingExplicitConfig(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing.yaml")
-	if err := run([]string{"-config", missing}, &bytes.Buffer{}); err == nil {
+	if err := run([]string{"-config", missing}, &bytes.Buffer{}, noUI(t)); err == nil {
 		t.Fatal("expected error")
 	}
 }
