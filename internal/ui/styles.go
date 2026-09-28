@@ -27,6 +27,7 @@ var (
 	styleHeader   = lipgloss.NewStyle().Foreground(colorText)
 	styleBrand    = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
 	styleNotice   = lipgloss.NewStyle().Foreground(colorBadge)
+	styleFlash    = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
 	styleError    = lipgloss.NewStyle().Foreground(lipgloss.Color("#fb4934")).Bold(true)
 )
 

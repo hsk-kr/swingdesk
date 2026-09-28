@@ -362,7 +362,7 @@ func TestHelpScrollsIndependently(t *testing.T) {
 		t.Fatal("help should overflow at 60x14")
 	}
 	m = press(t, m, "G")
-	if !strings.Contains(plain(m), "q          quit") {
+	if !strings.Contains(plain(m), "Full keybinding list") {
 		t.Error("G should reveal the end of help")
 	}
 	m = press(t, m, "g")
@@ -400,7 +400,7 @@ func TestHeaderShowsAgentStatus(t *testing.T) {
 	})
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 20})
 	head := strings.Split(plain(next.(Model)), "\n")[0]
-	for _, want := range []string{"last refresh 11:41", "next refresh 12:11", "agents error: tmux not found"} {
+	for _, want := range []string{"last refresh 11:41", "next 12:11", "agents error: tmux not found"} {
 		if !strings.Contains(head, want) {
 			t.Errorf("header missing %q: %q", want, head)
 		}

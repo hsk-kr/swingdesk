@@ -65,6 +65,10 @@ type Result struct {
 	Duration time.Duration
 }
 
+// Progress is called (from a job goroutine) as each job finishes. It must be
+// safe for concurrent use.
+type Progress func(Result)
+
 // Runner starts jobs in tmux windows and waits for their JSON files.
 type Runner struct {
 	cfg      Config
@@ -110,7 +114,8 @@ func (r Runner) Preflight() error {
 // Run executes every job for runID concurrently (one tmux window each) and
 // blocks until all finish, time out, or ctx is cancelled. Cancelling ctx
 // leaves running agents alone so a late file can still be imported later.
-func (r Runner) Run(ctx context.Context, runID int64, now time.Time, instruments []model.Instrument) ([]Result, error) {
+// progress (optional) is told about each job as it finishes.
+func (r Runner) Run(ctx context.Context, runID int64, now time.Time, instruments []model.Instrument, progress Progress) ([]Result, error) {
 	if err := r.Preflight(); err != nil {
 		return nil, err
 	}
@@ -137,6 +142,9 @@ func (r Runner) Run(ctx context.Context, runID int64, now time.Time, instruments
 		go func() {
 			defer wg.Done()
 			results[i] = r.runJob(ctx, runID, dir, job, now, instruments)
+			if progress != nil {
+				progress(results[i])
+			}
 		}()
 	}
 	wg.Wait()

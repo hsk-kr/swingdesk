@@ -2,13 +2,17 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/hsk-kr/swingdesk/internal/db"
+	"github.com/hsk-kr/swingdesk/internal/model"
 	"github.com/hsk-kr/swingdesk/internal/ui"
 )
 
@@ -163,5 +167,31 @@ func TestRefreshOnceEndToEnd(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "data", "swingdesk.log")); err != nil {
 		t.Errorf("log file missing: %v", err)
+	}
+}
+
+func TestInitialStatusRestoresLastRefresh(t *testing.T) {
+	_, cfgPath := tempConfig(t, "")
+	a, err := openApp(context.Background(), cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	st, err := a.initialStatus(context.Background())
+	if err != nil || !st.LastRefresh.IsZero() {
+		t.Fatalf("fresh db: %+v %v", st, err)
+	}
+	ctx := context.Background()
+	finished := time.Date(2026, 9, 27, 11, 0, 0, 0, time.UTC)
+	id, err := db.StartRun(ctx, a.conn, finished.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.FinishRun(ctx, a.conn, db.Run{ID: id, FinishedAt: finished, Status: model.RunOK, JobsOK: 3}); err != nil {
+		t.Fatal(err)
+	}
+	st, err = a.initialStatus(ctx)
+	if err != nil || !st.LastRefresh.Equal(finished) {
+		t.Errorf("status = %+v %v", st, err)
 	}
 }

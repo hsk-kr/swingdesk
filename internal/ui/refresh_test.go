@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/hsk-kr/swingdesk/internal/model"
 	"github.com/hsk-kr/swingdesk/internal/refresh"
@@ -24,10 +25,13 @@ type refreshSpy struct {
 	onRun func()
 }
 
-func (s refreshSpy) fn() refresh.Outcome {
+func (s refreshSpy) fn(progress func(model.Job)) refresh.Outcome {
 	*s.calls++
 	if s.onRun != nil {
 		s.onRun()
+	}
+	for _, j := range s.out.Jobs {
+		progress(j.Job)
 	}
 	return s.out
 }
@@ -63,7 +67,7 @@ func TestRefreshFiresOnStartupAndIngestedItemsAppear(t *testing.T) {
 		t.Fatalf("refresh calls = %d", calls)
 	}
 	out := plain(m)
-	for _, want := range []string{"last refresh 11:41", "next refresh 12:11", "agents idle", "refresh ok · +2 new", "fresh one"} {
+	for _, want := range []string{"last refresh 11:41", "next 12:11 (in 30:00)", "agents idle", "+2 new", "refresh ok · +2 new", "fresh one"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
@@ -142,5 +146,148 @@ func TestRWithoutRefresherExplains(t *testing.T) {
 	m = press(t, m, "R")
 	if !strings.Contains(plain(m), "refresh is not configured") {
 		t.Error("expected explanation")
+	}
+}
+
+func TestJobProgressShrinksRunningList(t *testing.T) {
+	start := testNow
+	c := clock{&start}
+	calls := 0
+	m, _ := newRefreshModel(t, refreshSpy{calls: &calls}, c)
+	next, _ := m.Update(tickMsg(c.now()))
+	m = next.(Model)
+	ch := make(chan tea.Msg)
+	next, cmd := m.Update(jobDoneMsg{job: model.JobTech, ch: ch})
+	m = next.(Model)
+	if !strings.Contains(plain(m), "agents running market,names") {
+		t.Errorf("header:\n%s", strings.Split(plain(m), "\n")[0])
+	}
+	if cmd == nil {
+		t.Fatal("job progress must re-arm the channel read")
+	}
+	close(ch)
+	if msg := cmd(); msg != nil {
+		t.Errorf("closed channel should yield nil, got %T", msg)
+	}
+}
+
+func TestRunRefreshStreamsProgressThenDone(t *testing.T) {
+	fn := func(progress func(model.Job)) refresh.Outcome {
+		progress(model.JobMarket)
+		progress(model.JobNames)
+		return refresh.Outcome{Status: model.RunPartial}
+	}
+	msg := runRefresh(fn)()
+	var got []string
+	for msg != nil {
+		switch v := msg.(type) {
+		case jobDoneMsg:
+			got = append(got, string(v.job))
+			msg = next(v.ch)()
+		case refreshDoneMsg:
+			got = append(got, "done:"+string(v.out.Status))
+			msg = nil
+		default:
+			t.Fatalf("unexpected %T", msg)
+		}
+	}
+	if strings.Join(got, ",") != "market,names,done:partial" {
+		t.Errorf("stream = %v", got)
+	}
+}
+
+func TestCountdownAndFlashExpire(t *testing.T) {
+	start := testNow
+	c := clock{&start}
+	calls := 0
+	spy := refreshSpy{calls: &calls, out: refresh.Outcome{Status: model.RunOK, Finished: testNow,
+		Jobs: []refresh.JobOutcome{{Job: model.JobNames, Inserted: 4}}}}
+	m, _ := newRefreshModel(t, spy, c)
+	m = drive(m, m.Init())
+	if !strings.Contains(plain(m), "+4 new") {
+		t.Fatal("flash missing")
+	}
+	c.add(95 * time.Second)
+	next, _ := m.Update(tickMsg(c.now()))
+	m = next.(Model)
+	head := strings.Split(plain(m), "\n")[0]
+	if strings.Contains(head, "+4 new") {
+		t.Error("flash should expire")
+	}
+	if !strings.Contains(head, "(in 28:25)") {
+		t.Errorf("countdown missing: %q", head)
+	}
+}
+
+func TestFmtCountdown(t *testing.T) {
+	cases := map[time.Duration]string{
+		0: "0:00", 59 * time.Second: "0:59", 30 * time.Minute: "30:00",
+		90*time.Minute + 5*time.Second: "1:30:05",
+	}
+	for d, want := range cases {
+		if got := fmtCountdown(d); got != want {
+			t.Errorf("fmtCountdown(%v) = %q, want %q", d, got, want)
+		}
+	}
+}
+
+func TestHelpMentionsTmuxAttach(t *testing.T) {
+	m := New(Options{Store: newFakeStore(nil, nil), Instruments: testInstruments(), TmuxSession: "desk2"})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 50})
+	m = press(t, next.(Model), "?")
+	if !strings.Contains(plain(m), "tmux attach -t desk2") {
+		t.Error("help should mention tmux attach with the session name")
+	}
+}
+
+func TestNarrowHeaderDropsLastThenNextKeepsAgentsAndFlash(t *testing.T) {
+	m := New(Options{Store: newFakeStore(nil, nil), Instruments: testInstruments(), Location: time.UTC,
+		Now: func() time.Time { return testNow }})
+	m.status = Status{LastRefresh: testNow, NextRefresh: testNow.Add(30 * time.Minute),
+		Agents: model.AgentStatus{State: model.AgentError, Err: `exec: "tmux": executable file not found in $PATH`}}
+	m.flashN, m.flashUntil = 3, testNow.Add(time.Minute)
+	for _, c := range []struct {
+		width     int
+		want, not []string
+	}{
+		{140, []string{"+3 new", "last refresh", "next 12:11", "agents error"}, nil},
+		{100, []string{"+3 new", "next 12:11", "agents error"}, []string{"last refresh"}},
+		{75, []string{"+3 new", "agents error", "unread 0"}, []string{"last refresh", "next"}},
+	} {
+		next, _ := m.Update(tea.WindowSizeMsg{Width: c.width, Height: 20})
+		head := strings.Split(plain(next.(Model)), "\n")[0]
+		for _, w := range c.want {
+			if !strings.Contains(head, w) {
+				t.Errorf("width %d: missing %q in %q", c.width, w, head)
+			}
+		}
+		for _, n := range c.not {
+			if strings.Contains(head, n) {
+				t.Errorf("width %d: %q should be dropped: %q", c.width, n, head)
+			}
+		}
+		if strings.Contains(head, "$PATH") {
+			t.Errorf("width %d: long agent error should be truncated: %q", c.width, head)
+		}
+	}
+}
+
+func TestHelpLayoutKeysBeforeTmuxSection(t *testing.T) {
+	lines := New(Options{Store: newFakeStore(nil, nil)}).helpLines()
+	joined := ansi.Strip(strings.Join(lines, "\n"))
+	quit := strings.Index(joined, "q          quit")
+	watch := strings.Index(joined, "Watch the agents")
+	if quit < 0 || watch < 0 || quit > watch {
+		t.Errorf("keys must precede the tmux section:\n%s", joined)
+	}
+}
+
+func TestBiasAsOfIncludesDate(t *testing.T) {
+	ins := testInstruments()
+	items := []model.Item{{ID: 1, InstrumentID: 1, Symbol: "NVDA", Category: model.CategoryNews, Title: "t", URL: "https://x", CreatedAt: testNow}}
+	biases := map[int64]model.Bias{1: {InstrumentID: 1, Stance: model.StanceLong, Confidence: 0.5, CreatedAt: testNow.Add(-72 * time.Hour)}}
+	m := newModelWith(t, newFakeStore(items, biases), ins, 120, 30)
+	if !strings.Contains(plain(m), "as of 24 Sep 11:41") {
+		t.Errorf("detail should date the stance:\n%s", plain(m))
 	}
 }
