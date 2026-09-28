@@ -18,7 +18,7 @@ func TestRunPrintsPaths(t *testing.T) {
 	if err := run([]string{"-config", cfgPath}, &out); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	for _, want := range []string{cfgPath, dir + "/data/swingdesk.db", "every 30 min"} {
+	for _, want := range []string{cfgPath, dir + "/data/swingdesk.db", "every 30 min", "instruments: 14"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output missing %q:\n%s", want, out.String())
 		}

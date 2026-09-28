@@ -2,13 +2,18 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 
+	"github.com/hsk-kr/swingdesk"
 	"github.com/hsk-kr/swingdesk/internal/config"
+	"github.com/hsk-kr/swingdesk/internal/db"
+	"github.com/hsk-kr/swingdesk/internal/model"
+	"github.com/hsk-kr/swingdesk/internal/watchlist"
 )
 
 func main() {
@@ -48,5 +53,29 @@ func run(args []string, out io.Writer) error {
 	fmt.Fprintf(out, "inbox:   %s\n", paths.InboxDir)
 	fmt.Fprintf(out, "runs:    %s\n", paths.RunsDir)
 	fmt.Fprintf(out, "refresh: every %d min (%s)\n", cfg.RefreshMinutes, cfg.Timezone)
+
+	instruments, err := openAndSeed(context.Background(), paths.DBFile)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "instruments: %d\n", len(instruments))
 	return nil
+}
+
+// openAndSeed opens the DB, applies migrations, seeds the watchlist on first
+// launch, and returns the stored instruments.
+func openAndSeed(ctx context.Context, dbFile string) ([]model.Instrument, error) {
+	seed, err := watchlist.Parse(swingdesk.WatchlistYAML)
+	if err != nil {
+		return nil, fmt.Errorf("embedded watchlist: %w", err)
+	}
+	conn, err := db.Open(ctx, dbFile)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	if _, err := db.SeedInstruments(ctx, conn, seed); err != nil {
+		return nil, err
+	}
+	return db.ListInstruments(ctx, conn)
 }
