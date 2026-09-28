@@ -91,6 +91,7 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		"empty claudebin": "claude_bin: \"\"\n",
 		"bypass mode":     "claude_permission_mode: bypassPermissions\n",
 		"dotted session":  "tmux_session: sw.desk\n",
+		"items over cap":  "max_items_per_job: 41\n",
 		"stale default":   "claude_permission_mode: default\n",
 		"zero timeout":    "job_timeout_minutes: 0\n",
 		"negative budget": "claude_max_budget_usd: -1\n",

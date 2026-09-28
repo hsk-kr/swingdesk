@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/hsk-kr/swingdesk/internal/model"
@@ -21,7 +23,11 @@ var (
 	ErrClaudeNotFound = errors.New("claude not found")
 	ErrJobTimeout     = errors.New("job timed out")
 	ErrJobBusy        = errors.New("previous run of this job is still running")
+	ErrJobDied        = errors.New("job pane exited without reporting a result")
 )
+
+// DefaultJobTimeout applies when Config.JobTimeout is not positive.
+const DefaultJobTimeout = 8 * time.Minute
 
 // ExitError is a job whose claude process exited non-zero.
 type ExitError struct {
@@ -73,6 +79,9 @@ func New(cfg Config, cmd Commander) Runner {
 	}
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = time.Second
+	}
+	if cfg.JobTimeout <= 0 {
+		cfg.JobTimeout = DefaultJobTimeout
 	}
 	return Runner{
 		cfg:      cfg,
@@ -153,6 +162,9 @@ func (r Runner) startJob(ctx context.Context, runID int64, dir string, job model
 		return err
 	}
 	f := filesFor(job)
+	if err := clearStale(dir, f); err != nil {
+		return err
+	}
 	if err := os.WriteFile(filepath.Join(dir, f.prompt), []byte(prompt), 0o600); err != nil {
 		return fmt.Errorf("write %s prompt: %w", job, err)
 	}
@@ -175,29 +187,65 @@ func (r Runner) startJob(ctx context.Context, runID int64, dir string, job model
 	return r.tmux.newWindow(ctx, r.cfg.Session, string(job), "sh "+shellQuote(script))
 }
 
-// waitJob polls for <job>.exit. On timeout it kills the job's window.
+// clearStale removes result files from an earlier attempt of the same run so
+// a retry cannot read an old exit code.
+func clearStale(dir string, f jobFiles) error {
+	for _, name := range []string{f.exit, f.exit + ".tmp", f.code, f.out, f.tmp, f.stderr} {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("clear %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// waitJob polls for <job>.exit. It fails fast if the pane died without
+// publishing one, and kills the window on timeout.
 func (r Runner) waitJob(ctx context.Context, dir string, job model.Job) (string, error) {
-	f := filesFor(job)
+	exitFile := filepath.Join(dir, filesFor(job).exit)
 	deadline := time.NewTimer(r.cfg.JobTimeout)
 	defer deadline.Stop()
 	tick := time.NewTicker(r.cfg.PollInterval)
 	defer tick.Stop()
 	for {
-		if code, ok := readExit(filepath.Join(dir, f.exit)); ok {
+		if code, ok := readExit(exitFile); ok {
 			return finished(dir, job, code)
 		}
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
 		case <-deadline.C:
-			// Background context: the kill must happen even if ctx is ending.
-			if err := r.tmux.killWindow(context.Background(), r.cfg.Session, string(job)); err != nil {
-				return "", fmt.Errorf("%w; kill failed: %v", ErrJobTimeout, err)
-			}
-			return "", ErrJobTimeout
+			return r.timeout(dir, job)
 		case <-tick.C:
+			if r.paneDead(ctx, job) {
+				if code, ok := readExit(exitFile); ok { // published just before exiting
+					return finished(dir, job, code)
+				}
+				return "", ErrJobDied
+			}
 		}
 	}
+}
+
+func (r Runner) paneDead(ctx context.Context, job model.Job) bool {
+	exists, alive, err := r.tmux.windowState(ctx, r.cfg.Session, string(job))
+	return err == nil && (!exists || !alive)
+}
+
+// timeout re-checks for a result that landed at the deadline, then kills.
+func (r Runner) timeout(dir string, job model.Job) (string, error) {
+	if code, ok := readExit(filepath.Join(dir, filesFor(job).exit)); ok {
+		return finished(dir, job, code)
+	}
+	// Background context: the kill must happen even if ctx is ending. SIGTERM
+	// the pane's process group first so claude cannot outlive its window.
+	bg := context.Background()
+	if pid, err := r.tmux.panePID(bg, r.cfg.Session, string(job)); err == nil && pid > 1 {
+		_ = syscall.Kill(-pid, syscall.SIGTERM) // best effort; kill-window follows
+	}
+	if err := r.tmux.killWindow(bg, r.cfg.Session, string(job)); err != nil {
+		return "", fmt.Errorf("%w; kill failed: %v", ErrJobTimeout, err)
+	}
+	return "", ErrJobTimeout
 }
 
 func readExit(path string) (int, bool) {
@@ -215,13 +263,34 @@ func readExit(path string) (int, bool) {
 func finished(dir string, job model.Job, code int) (string, error) {
 	f := filesFor(job)
 	if code != 0 {
-		return "", &ExitError{Job: job, Code: code, Stderr: tail(filepath.Join(dir, f.stderr), 3)}
+		reason := claudeError(filepath.Join(dir, f.tmp))
+		if reason == "" {
+			reason = tail(filepath.Join(dir, f.stderr), 3)
+		}
+		return "", &ExitError{Job: job, Code: code, Stderr: reason}
 	}
 	out := filepath.Join(dir, f.out)
 	if _, err := os.Stat(out); err != nil {
 		return "", fmt.Errorf("%s job exited 0 but %s is missing: %w", job, f.out, err)
 	}
 	return out, nil
+}
+
+// claudeError extracts the message from claude's JSON error result
+// ({"type":"result","is_error":true,"result":"..."}) if stdout holds one.
+func claudeError(path string) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var res struct {
+		IsError bool   `json:"is_error"`
+		Result  string `json:"result"`
+	}
+	if json.Unmarshal(raw, &res) != nil || !res.IsError {
+		return ""
+	}
+	return strings.TrimSpace(res.Result)
 }
 
 // tail returns the last n non-empty lines of a file, joined by " | ".

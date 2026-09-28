@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -78,4 +79,18 @@ func (t tmux) newWindow(ctx context.Context, session, window, command string) er
 func (t tmux) killWindow(ctx context.Context, session, window string) error {
 	_, err := t.run(ctx, "kill-window", "-t", "="+session+":"+window)
 	return err
+}
+
+// panePID returns the pid of session:window's pane process, which tmux starts
+// as a session leader (so it is also the process group id).
+func (t tmux) panePID(ctx context.Context, session, window string) (int, error) {
+	out, err := t.run(ctx, "display-message", "-p", "-t", "="+session+":"+window, "#{pane_pid}")
+	if err != nil {
+		return 0, err
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		return 0, fmt.Errorf("parse pane pid %q: %w", strings.TrimSpace(out), err)
+	}
+	return pid, nil
 }

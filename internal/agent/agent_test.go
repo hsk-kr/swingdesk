@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -148,6 +149,7 @@ case "$2" in
 esac
 case %q in
   fail) echo "Not logged in · Please run /login" >&2; exit 3 ;;
+  jsonerr) echo '{"type":"result","subtype":"error","is_error":true,"result":"Credit balance is too low"}'; exit 1 ;;
   hang) echo $$ > "hang.$job.pid"; exec sleep 30 ;;
 esac
 echo "researching $job" >&2
@@ -326,4 +328,127 @@ func eventually(d time.Duration, cond func() bool) bool {
 		time.Sleep(20 * time.Millisecond)
 	}
 	return true
+}
+
+func TestExitErrorPrefersClaudeJSONError(t *testing.T) {
+	r := tmuxRunner(t, fakeClaude(t, "jsonerr"), 20*time.Second)
+	results, err := r.Run(context.Background(), 1, testNow, instruments(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, res := range results {
+		var exitErr *ExitError
+		if !errors.As(res.Err, &exitErr) || exitErr.Stderr != "Credit balance is too low" {
+			t.Errorf("%s: err = %v", res.Job, res.Err)
+		}
+	}
+}
+
+// runHanging starts a hanging run in the background and waits until the
+// names pane is alive.
+func runHanging(t *testing.T, r Runner) <-chan []Result {
+	t.Helper()
+	done := make(chan []Result, 1)
+	go func() {
+		res, _ := r.Run(context.Background(), 1, testNow, instruments(t))
+		done <- res
+	}()
+	if !eventually(5*time.Second, func() bool {
+		_, alive, _ := r.tmux.windowState(context.Background(), "sdtest", "names")
+		return alive
+	}) {
+		t.Fatal("names window never started")
+	}
+	return done
+}
+
+func resultFor(results []Result, job model.Job) Result {
+	for _, r := range results {
+		if r.Job == job {
+			return r
+		}
+	}
+	return Result{}
+}
+
+func TestCtrlCInPanePublishesExit130(t *testing.T) {
+	r := tmuxRunner(t, fakeClaude(t, "hang"), 20*time.Second)
+	done := runHanging(t, r)
+	start := time.Now()
+	if out, err := exec.Command("tmux", "-L", r.cfg.TmuxSocket, "send-keys", "-t", "=sdtest:names", "C-c").CombinedOutput(); err != nil {
+		t.Fatalf("send-keys: %v %s", err, out)
+	}
+	for _, j := range []string{"market", "tech"} {
+		_ = exec.Command("tmux", "-L", r.cfg.TmuxSocket, "send-keys", "-t", "=sdtest:"+j, "C-c").Run()
+	}
+	results := <-done
+	var exitErr *ExitError
+	if res := resultFor(results, model.JobNames); !errors.As(res.Err, &exitErr) || exitErr.Code != 130 {
+		t.Errorf("names err = %v", res.Err)
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Error("interrupted job should be reported promptly, not at the timeout")
+	}
+}
+
+func TestPaneKilledWithoutExitFileFailsFast(t *testing.T) {
+	r := tmuxRunner(t, fakeClaude(t, "hang"), 20*time.Second)
+	done := runHanging(t, r)
+	start := time.Now()
+	for _, job := range model.Jobs() {
+		pid, err := r.tmux.panePID(context.Background(), "sdtest", string(job))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := exec.Command("kill", "-9", strconv.Itoa(pid)).Run(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	results := <-done
+	for _, res := range results {
+		if !errors.Is(res.Err, ErrJobDied) {
+			t.Errorf("%s: err = %v, want ErrJobDied", res.Job, res.Err)
+		}
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Error("dead pane should be detected promptly")
+	}
+}
+
+func TestClearStaleRemovesOldResults(t *testing.T) {
+	dir := t.TempDir()
+	f := filesFor(model.JobNames)
+	for _, name := range []string{f.exit, f.code, f.out, f.tmp, f.stderr} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("0"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := clearStale(dir, f); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 0 {
+		t.Errorf("left behind: %v", entries)
+	}
+	if err := clearStale(dir, f); err != nil {
+		t.Errorf("clearing an empty dir should succeed: %v", err)
+	}
+}
+
+func TestNewDefaultsJobTimeout(t *testing.T) {
+	if r := New(Config{}, ExecCommander{}); r.cfg.JobTimeout != DefaultJobTimeout {
+		t.Errorf("JobTimeout = %v", r.cfg.JobTimeout)
+	}
+}
+
+func TestScriptUsesSafeModeAndTrapsInterruptOnly(t *testing.T) {
+	s := buildScript(model.JobNames, 3, "/tmp/run dir's", ClaudeOptions{Bin: "claude", PermissionMode: config.PermissionDontAsk})
+	for _, want := range []string{"--safe-mode", `'/tmp/run dir'\''s'`, "trap 'publish 130; exit 130' INT\n", "publish \"$code\""} {
+		if !strings.Contains(s, want) {
+			t.Errorf("script missing %q:\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "HUP") {
+		t.Error("HUP must not be trapped (claude would outlive a killed pane)")
+	}
 }
