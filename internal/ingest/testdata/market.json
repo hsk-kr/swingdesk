@@ -1,0 +1,46 @@
+{
+  "job": "market",
+  "generated_at": "2026-09-27T11:41:00+01:00",
+  "items": [
+    {
+      "symbol": "TECH100",
+      "category": "market",
+      "title": "Nasdaq-100 futures flat ahead of CPI",
+      "summary": "Tech-heavy futures are flat into tomorrow's CPI print.",
+      "body": "",
+      "source": "CNBC",
+      "url": "https://example.com/futures-cpi",
+      "published_at": "2026-09-27T09:30:00Z",
+      "event_at": null,
+      "event_kind": null
+    },
+    {
+      "symbol": null,
+      "category": "market",
+      "title": "10-year yield eases after soft payrolls",
+      "summary": "Yields fell after weaker jobs data, supporting long-duration tech.",
+      "body": "",
+      "source": "WSJ",
+      "url": "https://example.com/yields",
+      "published_at": "2026-09-27T08:00:00Z",
+      "event_at": null,
+      "event_kind": null
+    },
+    {
+      "symbol": "crude",
+      "category": "event",
+      "title": "OPEC+ meeting",
+      "summary": "Scheduled OPEC+ ministerial meeting.",
+      "body": "",
+      "source": "OPEC",
+      "url": "",
+      "published_at": null,
+      "event_at": "2026-10-05",
+      "event_kind": "macro"
+    }
+  ],
+  "biases": [
+    {"symbol": "CRUDE", "stance": "short", "confidence": 0.55, "rationale": "Inventory build into expiry."},
+    {"symbol": "TECH100", "stance": "none", "confidence": 0.3, "rationale": "Waiting on CPI."}
+  ]
+}

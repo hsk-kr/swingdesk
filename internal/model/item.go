@@ -71,3 +71,31 @@ func Categories() []Category { return slices.Clone(categories[:]) }
 
 // Stances returns every stance.
 func Stances() []Stance { return slices.Clone(stances[:]) }
+
+// EventKind classifies a dated event.
+type EventKind string
+
+const (
+	EventEarnings EventKind = "earnings"
+	EventProduct  EventKind = "product"
+	EventMacro    EventKind = "macro"
+	EventLegal    EventKind = "legal"
+	EventOther    EventKind = "other"
+)
+
+var eventKinds = [...]EventKind{EventEarnings, EventProduct, EventMacro, EventLegal, EventOther}
+
+// Valid reports whether k is in the closed set.
+func (k EventKind) Valid() bool { return slices.Contains(eventKinds[:], k) }
+
+// EventKinds returns every event kind.
+func EventKinds() []EventKind { return slices.Clone(eventKinds[:]) }
+
+// Event is a dated catalyst attached to an item.
+type Event struct {
+	InstrumentID int64
+	ItemID       int64
+	Title        string
+	At           time.Time
+	Kind         EventKind
+}

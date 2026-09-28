@@ -38,7 +38,7 @@ func LatestBiases(ctx context.Context, conn *sql.DB) (map[int64]model.Bias, erro
 }
 
 // InsertBias records a stance for an instrument (runID 0 = no run).
-func InsertBias(ctx context.Context, conn *sql.DB, runID int64, b model.Bias) error {
+func InsertBias(ctx context.Context, conn DBTX, runID int64, b model.Bias) error {
 	if !b.Stance.Valid() {
 		return fmt.Errorf("invalid stance %q", b.Stance)
 	}
