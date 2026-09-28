@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -119,5 +120,48 @@ func TestRunIngestFile(t *testing.T) {
 	}
 	if err := run([]string{"-config", cfgPath, "-ingest", "../../internal/ingest/testdata/invalid.json"}, &out, noUI(t)); err == nil {
 		t.Error("invalid file should error")
+	}
+}
+
+// TestRefreshOnceEndToEnd runs the real runner against a private tmux server
+// (TMUX_TMPDIR) and a fake claude, then checks rows landed and files archived.
+func TestRefreshOnceEndToEnd(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	sockDir, err := os.MkdirTemp("", "sdm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMUX_TMPDIR", sockDir)
+	t.Setenv("TMUX", "")
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "kill-server").Run()
+		_ = os.RemoveAll(sockDir)
+	})
+	fake := filepath.Join(t.TempDir(), "claude")
+	fixture, err := filepath.Abs("../../internal/ingest/testdata")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\ncase \"$2\" in *'macro/market desk'*) j=market;; *'tech sector desk'*) j=tech;; *) j=names;; esac\ncat '" + fixture + "'/$j.json\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir, cfgPath := tempConfig(t, "claude_bin: "+fake+"\ntmux_session: sdmain\n")
+	var out bytes.Buffer
+	if err := run([]string{"-config", cfgPath, "-refresh-once"}, &out, noUI(t)); err != nil {
+		t.Fatalf("run: %v\n%s", err, out.String())
+	}
+	for _, want := range []string{"run 1: ok, 7 new items", "market: 3 new", "names: 2 new"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output missing %q:\n%s", want, out.String())
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "data", "runs", "1", "names.json")); err != nil {
+		t.Errorf("names.json not archived: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "data", "swingdesk.log")); err != nil {
+		t.Errorf("log file missing: %v", err)
 	}
 }

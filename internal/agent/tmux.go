@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Commander runs an external command and returns its combined output.
@@ -51,28 +52,47 @@ func (t tmux) ensureSession(ctx context.Context, session string) error {
 	return nil
 }
 
-// windowState reports whether session:window exists and whether its pane
-// process is still running.
-func (t tmux) windowState(ctx context.Context, session, window string) (exists, alive bool, err error) {
-	out, err := t.run(ctx, "list-windows", "-t", "="+session, "-F", "#{window_name} #{pane_dead}")
+// startedOption is a tmux window user option recording when a job started,
+// so a later process can age out agents orphaned by a quit.
+const startedOption = "@swingdesk_started"
+
+// window describes a job window.
+type window struct {
+	exists  bool
+	alive   bool      // pane process still running
+	started time.Time // zero if unknown
+}
+
+// windowState looks up session:name.
+func (t tmux) windowState(ctx context.Context, session, name string) (window, error) {
+	out, err := t.run(ctx, "list-windows", "-t", "="+session, "-F", "#{window_name} #{pane_dead} #{"+startedOption+"}")
 	if err != nil {
-		return false, false, err
+		return window{}, err
 	}
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		name, dead, ok := strings.Cut(line, " ")
-		if ok && name == window {
-			return true, dead != "1", nil
+		f := strings.Fields(line)
+		if len(f) < 2 || f[0] != name {
+			continue
 		}
+		w := window{exists: true, alive: f[1] != "1"}
+		if len(f) > 2 {
+			if sec, err := strconv.ParseInt(f[2], 10, 64); err == nil {
+				w.started = time.Unix(sec, 0)
+			}
+		}
+		return w, nil
 	}
-	return false, false, nil
+	return window{}, nil
 }
 
 // newWindow starts command in a new detached window that stays open after
 // the command exits, so the user can read the result when attached.
-func (t tmux) newWindow(ctx context.Context, session, window, command string) error {
+func (t tmux) newWindow(ctx context.Context, session, name, command string, started time.Time) error {
+	target := "=" + session + ":" + name
 	_, err := t.run(ctx,
-		"new-window", "-d", "-t", "="+session+":", "-n", window, command, ";",
-		"set-option", "-w", "-t", "="+session+":"+window, "remain-on-exit", "on")
+		"new-window", "-d", "-t", "="+session+":", "-n", name, command, ";",
+		"set-option", "-w", "-t", target, "remain-on-exit", "on", ";",
+		"set-option", "-w", "-t", target, startedOption, strconv.FormatInt(started.Unix(), 10))
 	return err
 }
 

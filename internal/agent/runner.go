@@ -172,19 +172,35 @@ func (r Runner) startJob(ctx context.Context, runID int64, dir string, job model
 	if err := os.WriteFile(script, []byte(buildScript(job, runID, dir, r.cfg.Claude)), 0o700); err != nil {
 		return fmt.Errorf("write %s script: %w", job, err)
 	}
-	exists, alive, err := r.tmux.windowState(ctx, r.cfg.Session, string(job))
-	if err != nil {
+	if err := r.clearWindow(ctx, job); err != nil {
 		return err
 	}
-	if alive {
+	return r.tmux.newWindow(ctx, r.cfg.Session, string(job), "sh "+shellQuote(script), time.Now())
+}
+
+// clearWindow removes a finished job window. A live one is left alone
+// (ErrJobBusy) unless it has outlived JobTimeout, e.g. an agent orphaned by a
+// quit that then hung; that one is killed like any other timed-out job.
+func (r Runner) clearWindow(ctx context.Context, job model.Job) error {
+	w, err := r.tmux.windowState(ctx, r.cfg.Session, string(job))
+	if err != nil || !w.exists {
+		return err
+	}
+	if w.alive && (w.started.IsZero() || time.Since(w.started) < r.cfg.JobTimeout) {
 		return ErrJobBusy
 	}
-	if exists {
-		if err := r.tmux.killWindow(ctx, r.cfg.Session, string(job)); err != nil {
-			return err
-		}
+	if w.alive {
+		r.termPaneGroup(ctx, job)
 	}
-	return r.tmux.newWindow(ctx, r.cfg.Session, string(job), "sh "+shellQuote(script))
+	return r.tmux.killWindow(ctx, r.cfg.Session, string(job))
+}
+
+// termPaneGroup SIGTERMs the job pane's process group (best effort; the
+// caller kills the window next either way).
+func (r Runner) termPaneGroup(ctx context.Context, job model.Job) {
+	if pid, err := r.tmux.panePID(ctx, r.cfg.Session, string(job)); err == nil && pid > 1 {
+		_ = syscall.Kill(-pid, syscall.SIGTERM)
+	}
 }
 
 // clearStale removes result files from an earlier attempt of the same run so
@@ -227,8 +243,8 @@ func (r Runner) waitJob(ctx context.Context, dir string, job model.Job) (string,
 }
 
 func (r Runner) paneDead(ctx context.Context, job model.Job) bool {
-	exists, alive, err := r.tmux.windowState(ctx, r.cfg.Session, string(job))
-	return err == nil && (!exists || !alive)
+	w, err := r.tmux.windowState(ctx, r.cfg.Session, string(job))
+	return err == nil && (!w.exists || !w.alive)
 }
 
 // timeout re-checks for a result that landed at the deadline, then kills.
@@ -239,9 +255,7 @@ func (r Runner) timeout(dir string, job model.Job) (string, error) {
 	// Background context: the kill must happen even if ctx is ending. SIGTERM
 	// the pane's process group first so claude cannot outlive its window.
 	bg := context.Background()
-	if pid, err := r.tmux.panePID(bg, r.cfg.Session, string(job)); err == nil && pid > 1 {
-		_ = syscall.Kill(-pid, syscall.SIGTERM) // best effort; kill-window follows
-	}
+	r.termPaneGroup(bg, job)
 	if err := r.tmux.killWindow(bg, r.cfg.Session, string(job)); err != nil {
 		return "", fmt.Errorf("%w; kill failed: %v", ErrJobTimeout, err)
 	}

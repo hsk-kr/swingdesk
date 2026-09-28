@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -120,8 +121,11 @@ func TestIngestTechAndClaudeWrapper(t *testing.T) {
 func TestInvalidFileRejected(t *testing.T) {
 	conn := openDB(t)
 	_, err := IngestFile(context.Background(), conn, filepath.Join("testdata", "invalid.json"), Options{Now: now})
-	if err == nil || !strings.Contains(err.Error(), "job") || !strings.Contains(err.Error(), "generated_at") {
+	if !errors.Is(err, ErrInvalidFile) || !strings.Contains(err.Error(), "job") || !strings.Contains(err.Error(), "generated_at") {
 		t.Fatalf("err = %v", err)
+	}
+	if _, err := IngestFile(context.Background(), conn, filepath.Join("testdata", "missing.json"), Options{Now: now}); err == nil || errors.Is(err, ErrInvalidFile) {
+		t.Errorf("missing file is transient, not invalid: %v", err)
 	}
 	if n := count(t, conn, `SELECT COUNT(*) FROM items`); n != 0 {
 		t.Errorf("items = %d", n)

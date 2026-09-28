@@ -267,9 +267,9 @@ func TestRunInTmuxTimesOutAndKills(t *testing.T) {
 			t.Errorf("%s: err = %v", res.Job, res.Err)
 		}
 	}
-	exists, _, err := r.tmux.windowState(context.Background(), "sdtest", "names")
-	if err != nil || exists {
-		t.Errorf("timed-out window should be killed: exists=%v err=%v", exists, err)
+	w, err := r.tmux.windowState(context.Background(), "sdtest", "names")
+	if err != nil || w.exists {
+		t.Errorf("timed-out window should be killed: exists=%v err=%v", w.exists, err)
 	}
 	for _, job := range model.Jobs() {
 		raw, err := os.ReadFile(filepath.Join(r.RunDir(1), "hang."+string(job)+".pid"))
@@ -292,19 +292,19 @@ func TestBusyJobIsNotReplaced(t *testing.T) {
 		defer close(done)
 		_, _ = r.Run(ctx, 1, testNow, instruments(t))
 	}()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, alive, _ := r.tmux.windowState(context.Background(), "sdtest", "names"); alive {
-			break
+	if !eventually(5*time.Second, func() bool {
+		for _, job := range model.Jobs() {
+			if _, err := os.Stat(filepath.Join(r.RunDir(1), "hang."+string(job)+".pid")); err != nil {
+				return false
+			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("names window never started")
-		}
-		time.Sleep(50 * time.Millisecond)
+		return true
+	}) {
+		t.Fatal("hanging jobs never started")
 	}
 	cancel() // quitting does not kill agents
 	<-done
-	if _, alive, _ := r.tmux.windowState(context.Background(), "sdtest", "names"); !alive {
+	if w, _ := r.tmux.windowState(context.Background(), "sdtest", "names"); !w.alive {
 		t.Fatal("cancel must leave the running agent alone")
 	}
 	results, err := r.Run(context.Background(), 2, testNow, instruments(t))
@@ -344,8 +344,8 @@ func TestExitErrorPrefersClaudeJSONError(t *testing.T) {
 	}
 }
 
-// runHanging starts a hanging run in the background and waits until the
-// names pane is alive.
+// runHanging starts a hanging run in the background and waits until every
+// job's fake claude is running (so each script has installed its trap).
 func runHanging(t *testing.T, r Runner) <-chan []Result {
 	t.Helper()
 	done := make(chan []Result, 1)
@@ -354,10 +354,14 @@ func runHanging(t *testing.T, r Runner) <-chan []Result {
 		done <- res
 	}()
 	if !eventually(5*time.Second, func() bool {
-		_, alive, _ := r.tmux.windowState(context.Background(), "sdtest", "names")
-		return alive
+		for _, job := range model.Jobs() {
+			if _, err := os.Stat(filepath.Join(r.RunDir(1), "hang."+string(job)+".pid")); err != nil {
+				return false
+			}
+		}
+		return true
 	}) {
-		t.Fatal("names window never started")
+		t.Fatal("hanging jobs never started")
 	}
 	return done
 }
@@ -451,4 +455,27 @@ func TestScriptUsesSafeModeAndTrapsInterruptOnly(t *testing.T) {
 	if strings.Contains(s, "HUP") {
 		t.Error("HUP must not be trapped (claude would outlive a killed pane)")
 	}
+}
+
+func TestOrphanedAgentOlderThanTimeoutIsReplaced(t *testing.T) {
+	r := tmuxRunner(t, fakeClaude(t, "hang"), 20*time.Second)
+	done := runHanging(t, r) // run 1 hangs
+	w, err := r.tmux.windowState(context.Background(), "sdtest", "names")
+	if err != nil || w.started.IsZero() {
+		t.Fatalf("started option not recorded: %+v %v", w, err)
+	}
+	// A later process with a short timeout sees run 1's windows as orphaned.
+	r2 := r
+	r2.cfg.JobTimeout = 1 * time.Second
+	time.Sleep(1100 * time.Millisecond)
+	results, err := r2.Run(context.Background(), 2, testNow, instruments(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, res := range results {
+		if errors.Is(res.Err, ErrJobBusy) {
+			t.Errorf("%s: stale orphan should have been replaced", res.Job)
+		}
+	}
+	<-done // run 1 observes its panes dying
 }

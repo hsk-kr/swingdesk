@@ -113,7 +113,7 @@ func (m Model) footer() string {
 		return fitWidth(style.Render(" "+m.notice), m.width)
 	}
 	parts := []part{
-		{"j/k move", 2}, {"h/l pane", 3}, {"r read", 1}, {"a all read", 4}, {"u undo", 4},
+		{"j/k move", 2}, {"h/l pane", 3}, {"r read", 1}, {"a all read", 4}, {"u undo", 4}, {"R refresh", 3},
 		{"enter open", 5}, {"g/G top/bottom", 6}, {"? help", 0}, {"q quit", 0},
 	}
 	return fitWidth(styleMuted.Render(" "+joinFitting(parts, " · ", m.width-1)), m.width)
@@ -295,6 +295,7 @@ func (m Model) helpLines() []string {
 		" r          mark selected read",
 		" a          mark all visible read",
 		" u          undo last mark read",
+		" R          refresh now (resets the timer)",
 		" ? / esc    close help (j/k scroll)",
 		" q          quit",
 		"",

@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/hsk-kr/swingdesk/internal/model"
+	"github.com/hsk-kr/swingdesk/internal/refresh"
 )
 
 type pane int
@@ -36,6 +37,8 @@ type Options struct {
 	Location    *time.Location
 	Status      Status
 	Now         func() time.Time // defaults to time.Now
+	Refresh     RefreshFunc      // nil disables scheduling
+	Interval    time.Duration    // refresh interval (default 30m)
 }
 
 // Model is the root Bubble Tea model. Update returns modified copies; slices
@@ -44,6 +47,9 @@ type Model struct {
 	keys        keyMap
 	store       Store
 	now         func() time.Time
+	refresh     RefreshFunc
+	sched       refresh.Schedule
+	tick        func() tea.Cmd
 	instruments map[int64]model.Instrument
 	loc         *time.Location
 	status      Status
@@ -81,6 +87,10 @@ func New(opts Options) Model {
 	if now == nil {
 		now = time.Now
 	}
+	interval := opts.Interval
+	if interval <= 0 {
+		interval = 30 * time.Minute
+	}
 	byID := make(map[int64]model.Instrument, len(opts.Instruments))
 	for _, in := range opts.Instruments {
 		byID[in.ID] = in
@@ -89,6 +99,9 @@ func New(opts Options) Model {
 		keys:        defaultKeys(),
 		store:       opts.Store,
 		now:         now,
+		refresh:     opts.Refresh,
+		sched:       refresh.NewSchedule(interval),
+		tick:        defaultTick,
 		instruments: byID,
 		loc:         loc,
 		status:      opts.Status,
@@ -104,9 +117,15 @@ type undoBatch struct {
 	ids []int64
 }
 
-// Init implements tea.Model.
+// Init implements tea.Model. The first refresh fires on an immediate tick so
+// it never blocks the first paint.
 func (m Model) Init() tea.Cmd {
-	return loadCmd(m.store, m.loadSeq, m.currentFilter())
+	load := loadCmd(m.store, m.loadSeq, m.currentFilter())
+	if m.refresh == nil {
+		return load
+	}
+	now := m.now()
+	return tea.Batch(load, func() tea.Msg { return tickMsg(now) })
 }
 
 func (m Model) currentFilter() model.ItemFilter { return m.filters[m.filterCursor].Query }
@@ -135,6 +154,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyLoaded(msg), nil
 	case markedMsg:
 		return m.applyMarked(msg)
+	case tickMsg:
+		return m.onTick(time.Time(msg))
+	case refreshDoneMsg:
+		return m.onRefreshDone(msg.out)
 	case tea.KeyPressMsg:
 		m.notice, m.noticeErr = "", false
 		return m.handleKey(msg)
@@ -225,6 +248,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.markVisibleRead()
 	case key.Matches(msg, k.Undo):
 		return m.undoLast()
+	case key.Matches(msg, k.Refresh):
+		return m.forceRefresh()
 	case key.Matches(msg, k.NextPane):
 		m.focus = (m.focus + 1) % paneCount
 	case key.Matches(msg, k.PrevPane):

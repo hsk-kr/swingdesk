@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -13,14 +12,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/hsk-kr/swingdesk"
-	"github.com/hsk-kr/swingdesk/internal/config"
-	"github.com/hsk-kr/swingdesk/internal/db"
-	"github.com/hsk-kr/swingdesk/internal/ingest"
-	"github.com/hsk-kr/swingdesk/internal/model"
 	"github.com/hsk-kr/swingdesk/internal/sample"
 	"github.com/hsk-kr/swingdesk/internal/ui"
-	"github.com/hsk-kr/swingdesk/internal/watchlist"
 )
 
 func main() {
@@ -38,112 +31,62 @@ func runProgram(m ui.Model) error {
 	return err
 }
 
-func run(args []string, out io.Writer, start startUI) error {
+type flags struct {
+	config       string
+	pathsOnly    bool
+	insertSample bool
+	ingestFile   string
+	refreshOnce  bool
+}
+
+func parseFlags(args []string, out io.Writer) (flags, error) {
+	var f flags
 	fs := flag.NewFlagSet("swingdesk", flag.ContinueOnError)
 	fs.SetOutput(out)
-	configFlag := fs.String("config", "", "path to config.yaml (default: XDG config dir)")
-	pathsOnly := fs.Bool("paths", false, "print resolved paths and exit")
-	insertSample := fs.Bool("insert-sample", false, "insert placeholder inbox items and exit")
-	ingestFile := fs.String("ingest", "", "ingest one agent JSON file and exit")
+	fs.StringVar(&f.config, "config", "", "path to config.yaml (default: XDG config dir)")
+	fs.BoolVar(&f.pathsOnly, "paths", false, "print resolved paths and exit")
+	fs.BoolVar(&f.insertSample, "insert-sample", false, "insert placeholder inbox items and exit")
+	fs.StringVar(&f.ingestFile, "ingest", "", "ingest one agent JSON file and exit")
+	fs.BoolVar(&f.refreshOnce, "refresh-once", false, "run one refresh (agents + ingest) without the TUI and exit")
 	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
-		return err
+		return flags{}, err
 	}
 	if fs.NArg() > 0 {
-		return fmt.Errorf("unexpected arguments: %v", fs.Args())
+		return flags{}, fmt.Errorf("unexpected arguments: %v", fs.Args())
 	}
+	return f, nil
+}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("resolve home dir: %w", err)
+func run(args []string, out io.Writer, start startUI) error {
+	f, err := parseFlags(args, out)
+	if errors.Is(err, flag.ErrHelp) {
+		return nil
 	}
-	loc := config.ConfigPath(*configFlag, os.Getenv, home)
-	cfg, err := config.Load(loc)
 	if err != nil {
 		return err
 	}
-	paths := config.ResolvePaths(cfg, loc.Path, os.Getenv, home)
-	tz, err := cfg.Location()
+	a, err := openApp(context.Background(), f.config)
 	if err != nil {
-		return fmt.Errorf("timezone: %w", err)
+		return err
 	}
+	defer a.Close()
 
 	ctx := context.Background()
-	conn, instruments, err := openAndSeed(ctx, paths.DBFile)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-
 	switch {
-	case *pathsOnly:
-		printPaths(out, cfg, paths, len(instruments))
+	case f.pathsOnly:
+		a.printPaths(out)
 		return nil
-	case *insertSample:
-		n, err := sample.Insert(ctx, conn, time.Now())
+	case f.insertSample:
+		n, err := sample.Insert(ctx, a.conn, time.Now())
 		if err != nil {
 			return fmt.Errorf("insert sample: %w", err)
 		}
-		fmt.Fprintf(out, "inserted %d sample items into %s\n", n, paths.DBFile)
+		fmt.Fprintf(out, "inserted %d sample items into %s\n", n, a.paths.DBFile)
 		return nil
-	case *ingestFile != "":
-		return ingestOne(ctx, out, conn, *ingestFile, cfg.MaxItemsPerJob)
+	case f.ingestFile != "":
+		return a.ingestOne(ctx, out, f.ingestFile)
+	case f.refreshOnce:
+		return a.refreshOnce(ctx, out)
 	}
-
-	return start(ui.New(ui.Options{
-		Store:       db.NewStore(conn),
-		Instruments: instruments,
-		Location:    tz,
-	}))
-}
-
-func ingestOne(ctx context.Context, out io.Writer, conn *sql.DB, path string, maxItems int) error {
-	res, err := ingest.IngestFile(ctx, conn, path, ingest.Options{MaxItems: maxItems})
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(out, "%s: %d new, %d updated, %d events, %d biases, %d skipped\n",
-		res.Job, res.Inserted, res.Updated, res.Events, res.Biases, len(res.Skipped))
-	for _, s := range res.Skipped {
-		fmt.Fprintf(out, "  skipped %s #%d %s: %s\n", s.Kind, s.Index, s.Symbol, s.Reason)
-	}
-	for _, w := range res.Warnings {
-		fmt.Fprintf(out, "  dropped %s on item #%d %s: %s\n", w.Kind, w.Index, w.Symbol, w.Reason)
-	}
-	return nil
-}
-
-func printPaths(out io.Writer, cfg config.Config, paths config.Paths, instruments int) {
-	fmt.Fprintf(out, "config:  %s\n", paths.ConfigFile)
-	fmt.Fprintf(out, "data:    %s\n", paths.DataDir)
-	fmt.Fprintf(out, "db:      %s\n", paths.DBFile)
-	fmt.Fprintf(out, "inbox:   %s\n", paths.InboxDir)
-	fmt.Fprintf(out, "runs:    %s\n", paths.RunsDir)
-	fmt.Fprintf(out, "refresh: every %d min (%s)\n", cfg.RefreshMinutes, cfg.Timezone)
-	fmt.Fprintf(out, "instruments: %d\n", instruments)
-}
-
-// openAndSeed opens the DB, applies migrations, seeds the watchlist on first
-// launch, and returns the open connection plus the stored instruments.
-func openAndSeed(ctx context.Context, dbFile string) (*sql.DB, []model.Instrument, error) {
-	seed, err := watchlist.Parse(swingdesk.WatchlistYAML)
-	if err != nil {
-		return nil, nil, fmt.Errorf("embedded watchlist: %w", err)
-	}
-	conn, err := db.Open(ctx, dbFile)
-	if err != nil {
-		return nil, nil, err
-	}
-	if _, err := db.SeedInstruments(ctx, conn, seed); err != nil {
-		conn.Close()
-		return nil, nil, err
-	}
-	instruments, err := db.ListInstruments(ctx, conn)
-	if err != nil {
-		conn.Close()
-		return nil, nil, err
-	}
-	return conn, instruments, nil
+	return a.runUI(start)
 }

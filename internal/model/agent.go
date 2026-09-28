@@ -68,3 +68,30 @@ func (s AgentStatus) String() string {
 		return string(AgentIdle)
 	}
 }
+
+// RunStatus is refresh_runs.status.
+type RunStatus string
+
+const (
+	RunRunning RunStatus = "running"
+	RunOK      RunStatus = "ok"
+	RunPartial RunStatus = "partial"
+	RunError   RunStatus = "error"
+)
+
+var runStatuses = [...]RunStatus{RunRunning, RunOK, RunPartial, RunError}
+
+// Valid reports whether s is in the closed set.
+func (s RunStatus) Valid() bool { return slices.Contains(runStatuses[:], s) }
+
+// RunStatusFor derives the final status from job counts out of total jobs.
+func RunStatusFor(ok, total int) RunStatus {
+	switch {
+	case total > 0 && ok >= total:
+		return RunOK
+	case ok > 0:
+		return RunPartial
+	default:
+		return RunError
+	}
+}

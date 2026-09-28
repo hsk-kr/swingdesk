@@ -1,0 +1,186 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/hsk-kr/swingdesk"
+	"github.com/hsk-kr/swingdesk/internal/agent"
+	"github.com/hsk-kr/swingdesk/internal/config"
+	"github.com/hsk-kr/swingdesk/internal/db"
+	"github.com/hsk-kr/swingdesk/internal/ingest"
+	"github.com/hsk-kr/swingdesk/internal/model"
+	"github.com/hsk-kr/swingdesk/internal/refresh"
+	"github.com/hsk-kr/swingdesk/internal/ui"
+	"github.com/hsk-kr/swingdesk/internal/watchlist"
+)
+
+// app holds everything opened for one process.
+type app struct {
+	cfg         config.Config
+	paths       config.Paths
+	tz          *time.Location
+	conn        *sql.DB
+	instruments []model.Instrument
+	logFile     *os.File
+	logger      *slog.Logger
+}
+
+func openApp(ctx context.Context, configFlag string) (*app, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("resolve home dir: %w", err)
+	}
+	loc := config.ConfigPath(configFlag, os.Getenv, home)
+	cfg, err := config.Load(loc)
+	if err != nil {
+		return nil, err
+	}
+	tz, err := cfg.Location()
+	if err != nil {
+		return nil, fmt.Errorf("timezone: %w", err)
+	}
+	a := &app{cfg: cfg, paths: config.ResolvePaths(cfg, loc.Path, os.Getenv, home), tz: tz}
+	if a.conn, a.instruments, err = openAndSeed(ctx, a.paths.DBFile); err != nil {
+		return nil, err
+	}
+	if err := a.openLog(); err != nil {
+		a.Close()
+		return nil, err
+	}
+	return a, nil
+}
+
+// openLog appends to data_dir/swingdesk.log; the TUI owns the terminal.
+func (a *app) openLog() error {
+	f, err := os.OpenFile(filepath.Join(a.paths.DataDir, "swingdesk.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("open log: %w", err)
+	}
+	a.logFile, a.logger = f, slog.New(slog.NewTextHandler(f, nil))
+	return nil
+}
+
+func (a *app) Close() {
+	if a.conn != nil {
+		a.conn.Close()
+	}
+	if a.logFile != nil {
+		a.logFile.Close()
+	}
+}
+
+func (a *app) refresher() refresh.Refresher {
+	runner := agent.New(agent.Config{
+		Session: a.cfg.TmuxSession,
+		Claude: agent.ClaudeOptions{
+			Bin:             a.cfg.ClaudeBin,
+			Model:           a.cfg.ClaudeModel,
+			PermissionMode:  a.cfg.ClaudePermissionMode,
+			SkipPermissions: a.cfg.ClaudeSkipPermissions,
+			MaxBudgetUSD:    a.cfg.ClaudeMaxBudgetUSD,
+		},
+		InboxDir:   a.paths.InboxDir,
+		JobTimeout: a.cfg.JobTimeout(),
+		MaxItems:   a.cfg.MaxItemsPerJob,
+		Location:   a.tz,
+	}, agent.ExecCommander{})
+	return refresh.New(refresh.Deps{
+		Conn: a.conn, Runner: runner, InboxDir: a.paths.InboxDir, RunsDir: a.paths.RunsDir,
+		LockPath: filepath.Join(a.paths.DataDir, "refresh.lock"),
+		MaxItems: a.cfg.MaxItemsPerJob, Logger: a.logger,
+	})
+}
+
+// runUI starts the TUI. Quitting cancels an in-flight refresh; agents keep
+// running in tmux and their files are imported on the next launch.
+func (a *app) runUI(start startUI) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := a.refresher()
+	return start(ui.New(ui.Options{
+		Store:       db.NewStore(a.conn),
+		Instruments: a.instruments,
+		Location:    a.tz,
+		Interval:    a.cfg.RefreshInterval(),
+		Refresh:     func() refresh.Outcome { return r.Refresh(ctx) },
+	}))
+}
+
+func (a *app) refreshOnce(ctx context.Context, out io.Writer) error {
+	o := a.refresher().Refresh(ctx)
+	if o.Leftovers.Files > 0 {
+		fmt.Fprintf(out, "leftovers: %d files, %d new items\n", o.Leftovers.Files, o.Leftovers.Inserted)
+	}
+	fmt.Fprintf(out, "run %d: %s, %d new items\n", o.RunID, o.Status, o.NewItems())
+	for _, j := range o.Jobs {
+		if j.Err != nil {
+			fmt.Fprintf(out, "  %s: %v\n", j.Job, j.Err)
+			continue
+		}
+		fmt.Fprintf(out, "  %s: %d new, %d updated, %d skipped\n", j.Job, j.Inserted, j.Updated, j.Skipped)
+	}
+	if o.Err != nil {
+		return o.Err
+	}
+	if o.Status == model.RunError {
+		return errors.New("refresh failed")
+	}
+	return nil
+}
+
+func (a *app) ingestOne(ctx context.Context, out io.Writer, path string) error {
+	res, err := ingest.IngestFile(ctx, a.conn, path, ingest.Options{MaxItems: a.cfg.MaxItemsPerJob})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "%s: %d new, %d updated, %d events, %d biases, %d skipped\n",
+		res.Job, res.Inserted, res.Updated, res.Events, res.Biases, len(res.Skipped))
+	for _, s := range res.Skipped {
+		fmt.Fprintf(out, "  skipped %s #%d %s: %s\n", s.Kind, s.Index, s.Symbol, s.Reason)
+	}
+	for _, w := range res.Warnings {
+		fmt.Fprintf(out, "  dropped %s on item #%d %s: %s\n", w.Kind, w.Index, w.Symbol, w.Reason)
+	}
+	return nil
+}
+
+func (a *app) printPaths(out io.Writer) {
+	fmt.Fprintf(out, "config:  %s\n", a.paths.ConfigFile)
+	fmt.Fprintf(out, "data:    %s\n", a.paths.DataDir)
+	fmt.Fprintf(out, "db:      %s\n", a.paths.DBFile)
+	fmt.Fprintf(out, "inbox:   %s\n", a.paths.InboxDir)
+	fmt.Fprintf(out, "runs:    %s\n", a.paths.RunsDir)
+	fmt.Fprintf(out, "refresh: every %d min (%s)\n", a.cfg.RefreshMinutes, a.cfg.Timezone)
+	fmt.Fprintf(out, "instruments: %d\n", len(a.instruments))
+}
+
+// openAndSeed opens the DB, applies migrations, seeds the watchlist on first
+// launch, and returns the open connection plus the stored instruments.
+func openAndSeed(ctx context.Context, dbFile string) (*sql.DB, []model.Instrument, error) {
+	seed, err := watchlist.Parse(swingdesk.WatchlistYAML)
+	if err != nil {
+		return nil, nil, fmt.Errorf("embedded watchlist: %w", err)
+	}
+	conn, err := db.Open(ctx, dbFile)
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, err := db.SeedInstruments(ctx, conn, seed); err != nil {
+		conn.Close()
+		return nil, nil, err
+	}
+	instruments, err := db.ListInstruments(ctx, conn)
+	if err != nil {
+		conn.Close()
+		return nil, nil, err
+	}
+	return conn, instruments, nil
+}
