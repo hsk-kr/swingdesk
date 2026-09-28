@@ -344,8 +344,8 @@ func TestExitErrorPrefersClaudeJSONError(t *testing.T) {
 	}
 }
 
-// runHanging starts a hanging run in the background and waits until the
-// names pane is alive.
+// runHanging starts a hanging run in the background and waits until every
+// job's fake claude is running (so each script has installed its trap).
 func runHanging(t *testing.T, r Runner) <-chan []Result {
 	t.Helper()
 	done := make(chan []Result, 1)
@@ -354,10 +354,14 @@ func runHanging(t *testing.T, r Runner) <-chan []Result {
 		done <- res
 	}()
 	if !eventually(5*time.Second, func() bool {
-		_, alive, _ := r.tmux.windowState(context.Background(), "sdtest", "names")
-		return alive
+		for _, job := range model.Jobs() {
+			if _, err := os.Stat(filepath.Join(r.RunDir(1), "hang."+string(job)+".pid")); err != nil {
+				return false
+			}
+		}
+		return true
 	}) {
-		t.Fatal("names window never started")
+		t.Fatal("hanging jobs never started")
 	}
 	return done
 }

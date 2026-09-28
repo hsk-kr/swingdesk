@@ -80,3 +80,18 @@ func TestEventKindValid(t *testing.T) {
 		t.Error("unexpected valid event kind")
 	}
 }
+
+func TestRunStatusFor(t *testing.T) {
+	cases := []struct {
+		ok, total int
+		want      RunStatus
+	}{{3, 3, RunOK}, {2, 3, RunPartial}, {0, 3, RunError}, {0, 0, RunError}, {4, 3, RunOK}}
+	for _, c := range cases {
+		if got := RunStatusFor(c.ok, c.total); got != c.want || !got.Valid() {
+			t.Errorf("RunStatusFor(%d,%d) = %s", c.ok, c.total, got)
+		}
+	}
+	if RunStatus("done").Valid() {
+		t.Error("unexpected valid status")
+	}
+}

@@ -8,7 +8,7 @@ type keyMap struct {
 	Enter, Back           key.Binding
 	Top, Bottom           key.Binding
 	MarkRead, MarkAll     key.Binding
-	Undo                  key.Binding
+	Undo, Refresh         key.Binding
 	Help, Quit            key.Binding
 }
 
@@ -27,6 +27,7 @@ func defaultKeys() keyMap {
 		MarkRead: key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "mark read")),
 		MarkAll:  key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "mark all visible read")),
 		Undo:     key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "undo mark read")),
+		Refresh:  key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "refresh now")),
 		Help:     key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		Quit:     key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
 	}
