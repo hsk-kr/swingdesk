@@ -127,7 +127,7 @@ func TestPreflightTypedErrors(t *testing.T) {
 	if !errors.Is(err, ErrTmuxNotFound) || !errors.Is(err, ErrClaudeNotFound) {
 		t.Errorf("err = %v", err)
 	}
-	if _, err := r.Run(context.Background(), 1, testNow, nil); !errors.Is(err, ErrTmuxNotFound) {
+	if _, err := r.Run(context.Background(), 1, testNow, nil, nil); !errors.Is(err, ErrTmuxNotFound) {
 		t.Errorf("Run should surface preflight error, got %v", err)
 	}
 }
@@ -195,7 +195,11 @@ func tmuxRunner(t *testing.T, claudeBin string, timeout time.Duration) Runner {
 
 func TestRunInTmuxWritesIngestableFiles(t *testing.T) {
 	r := tmuxRunner(t, fakeClaude(t, "ok"), 20*time.Second)
-	results, err := r.Run(context.Background(), 7, testNow, instruments(t))
+	progress := make(chan model.Job, 3)
+	results, err := r.Run(context.Background(), 7, testNow, instruments(t), func(res Result) { progress <- res.Job })
+	if len(progress) != 3 {
+		t.Errorf("progress calls = %d", len(progress))
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +231,7 @@ func TestRunInTmuxWritesIngestableFiles(t *testing.T) {
 	}
 	// Windows stay (remain-on-exit) so the user can read them; a second run
 	// replaces dead windows instead of failing.
-	if _, err := r.Run(context.Background(), 8, testNow, instruments(t)); err != nil {
+	if _, err := r.Run(context.Background(), 8, testNow, instruments(t), nil); err != nil {
 		t.Fatal(err)
 	}
 	out, err := exec.Command("tmux", "-L", r.cfg.TmuxSocket, "list-windows", "-t", "=sdtest", "-F", "#{window_name}").Output()
@@ -241,7 +245,7 @@ func TestRunInTmuxWritesIngestableFiles(t *testing.T) {
 
 func TestRunInTmuxReportsExitErrors(t *testing.T) {
 	r := tmuxRunner(t, fakeClaude(t, "fail"), 20*time.Second)
-	results, err := r.Run(context.Background(), 1, testNow, instruments(t))
+	results, err := r.Run(context.Background(), 1, testNow, instruments(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +262,7 @@ func TestRunInTmuxReportsExitErrors(t *testing.T) {
 
 func TestRunInTmuxTimesOutAndKills(t *testing.T) {
 	r := tmuxRunner(t, fakeClaude(t, "hang"), 700*time.Millisecond)
-	results, err := r.Run(context.Background(), 1, testNow, instruments(t))
+	results, err := r.Run(context.Background(), 1, testNow, instruments(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +294,7 @@ func TestBusyJobIsNotReplaced(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = r.Run(ctx, 1, testNow, instruments(t))
+		_, _ = r.Run(ctx, 1, testNow, instruments(t), nil)
 	}()
 	if !eventually(5*time.Second, func() bool {
 		for _, job := range model.Jobs() {
@@ -307,7 +311,7 @@ func TestBusyJobIsNotReplaced(t *testing.T) {
 	if w, _ := r.tmux.windowState(context.Background(), "sdtest", "names"); !w.alive {
 		t.Fatal("cancel must leave the running agent alone")
 	}
-	results, err := r.Run(context.Background(), 2, testNow, instruments(t))
+	results, err := r.Run(context.Background(), 2, testNow, instruments(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +336,7 @@ func eventually(d time.Duration, cond func() bool) bool {
 
 func TestExitErrorPrefersClaudeJSONError(t *testing.T) {
 	r := tmuxRunner(t, fakeClaude(t, "jsonerr"), 20*time.Second)
-	results, err := r.Run(context.Background(), 1, testNow, instruments(t))
+	results, err := r.Run(context.Background(), 1, testNow, instruments(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +354,7 @@ func runHanging(t *testing.T, r Runner) <-chan []Result {
 	t.Helper()
 	done := make(chan []Result, 1)
 	go func() {
-		res, _ := r.Run(context.Background(), 1, testNow, instruments(t))
+		res, _ := r.Run(context.Background(), 1, testNow, instruments(t), nil)
 		done <- res
 	}()
 	if !eventually(5*time.Second, func() bool {
@@ -468,7 +472,7 @@ func TestOrphanedAgentOlderThanTimeoutIsReplaced(t *testing.T) {
 	r2 := r
 	r2.cfg.JobTimeout = 1 * time.Second
 	time.Sleep(1100 * time.Millisecond)
-	results, err := r2.Run(context.Background(), 2, testNow, instruments(t))
+	results, err := r2.Run(context.Background(), 2, testNow, instruments(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

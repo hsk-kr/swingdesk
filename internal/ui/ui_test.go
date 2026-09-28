@@ -400,7 +400,7 @@ func TestHeaderShowsAgentStatus(t *testing.T) {
 	})
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 20})
 	head := strings.Split(plain(next.(Model)), "\n")[0]
-	for _, want := range []string{"last refresh 11:41", "next refresh 12:11", "agents error: tmux not found"} {
+	for _, want := range []string{"last refresh 11:41", "next 12:11", "agents error: tmux not found"} {
 		if !strings.Contains(head, want) {
 			t.Errorf("header missing %q: %q", want, head)
 		}

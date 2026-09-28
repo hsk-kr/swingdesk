@@ -17,7 +17,7 @@ import (
 
 // JobRunner is the agent runner (agent.Runner in production).
 type JobRunner interface {
-	Run(ctx context.Context, runID int64, now time.Time, instruments []model.Instrument) ([]agent.Result, error)
+	Run(ctx context.Context, runID int64, now time.Time, instruments []model.Instrument, progress agent.Progress) ([]agent.Result, error)
 }
 
 // Deps wires a Refresher.
@@ -77,7 +77,8 @@ func (o Outcome) NewItems() int {
 // Refresh records a refresh_runs row, imports leftover files from earlier
 // sessions, runs the agents and ingests what they wrote. If ctx is cancelled
 // (quit) the run is left 'running' for the next launch to reconcile.
-func (r Refresher) Refresh(ctx context.Context) Outcome {
+// progress (optional) is told as each agent job finishes.
+func (r Refresher) Refresh(ctx context.Context, progress agent.Progress) Outcome {
 	var out Outcome
 	lock, err := acquireLock(r.d.LockPath)
 	if err != nil {
@@ -96,7 +97,7 @@ func (r Refresher) Refresh(ctx context.Context) Outcome {
 	if err != nil {
 		return r.finish(ctx, out, err)
 	}
-	results, runErr := r.d.Runner.Run(ctx, out.RunID, started, instruments)
+	results, runErr := r.d.Runner.Run(ctx, out.RunID, started, instruments, progress)
 	if ctx.Err() != nil {
 		out.Err = ctx.Err()
 		return r.done(out) // leave the row running; leftovers import finishes it

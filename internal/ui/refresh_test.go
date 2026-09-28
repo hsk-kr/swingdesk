@@ -24,10 +24,13 @@ type refreshSpy struct {
 	onRun func()
 }
 
-func (s refreshSpy) fn() refresh.Outcome {
+func (s refreshSpy) fn(progress func(model.Job, error)) refresh.Outcome {
 	*s.calls++
 	if s.onRun != nil {
 		s.onRun()
+	}
+	for _, j := range s.out.Jobs {
+		progress(j.Job, j.Err)
 	}
 	return s.out
 }
@@ -63,7 +66,7 @@ func TestRefreshFiresOnStartupAndIngestedItemsAppear(t *testing.T) {
 		t.Fatalf("refresh calls = %d", calls)
 	}
 	out := plain(m)
-	for _, want := range []string{"last refresh 11:41", "next refresh 12:11", "agents idle", "refresh ok · +2 new", "fresh one"} {
+	for _, want := range []string{"last refresh 11:41", "next 12:11 (in 30:00)", "agents idle", "+2 new", "refresh ok · +2 new", "fresh one"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
@@ -142,5 +145,96 @@ func TestRWithoutRefresherExplains(t *testing.T) {
 	m = press(t, m, "R")
 	if !strings.Contains(plain(m), "refresh is not configured") {
 		t.Error("expected explanation")
+	}
+}
+
+func TestJobProgressShrinksRunningList(t *testing.T) {
+	start := testNow
+	c := clock{&start}
+	calls := 0
+	m, _ := newRefreshModel(t, refreshSpy{calls: &calls}, c)
+	next, _ := m.Update(tickMsg(c.now()))
+	m = next.(Model)
+	ch := make(chan tea.Msg)
+	next, cmd := m.Update(jobDoneMsg{job: model.JobTech, ch: ch})
+	m = next.(Model)
+	if !strings.Contains(plain(m), "agents running market,names") {
+		t.Errorf("header:\n%s", strings.Split(plain(m), "\n")[0])
+	}
+	if cmd == nil {
+		t.Fatal("job progress must re-arm the channel read")
+	}
+	close(ch)
+	if msg := cmd(); msg != nil {
+		t.Errorf("closed channel should yield nil, got %T", msg)
+	}
+}
+
+func TestRunRefreshStreamsProgressThenDone(t *testing.T) {
+	fn := func(progress func(model.Job, error)) refresh.Outcome {
+		progress(model.JobMarket, nil)
+		progress(model.JobNames, errors.New("x"))
+		return refresh.Outcome{Status: model.RunPartial}
+	}
+	msg := runRefresh(fn)()
+	var got []string
+	for msg != nil {
+		switch v := msg.(type) {
+		case jobDoneMsg:
+			got = append(got, string(v.job))
+			msg = next(v.ch)()
+		case refreshDoneMsg:
+			got = append(got, "done:"+string(v.out.Status))
+			msg = nil
+		default:
+			t.Fatalf("unexpected %T", msg)
+		}
+	}
+	if strings.Join(got, ",") != "market,names,done:partial" {
+		t.Errorf("stream = %v", got)
+	}
+}
+
+func TestCountdownAndFlashExpire(t *testing.T) {
+	start := testNow
+	c := clock{&start}
+	calls := 0
+	spy := refreshSpy{calls: &calls, out: refresh.Outcome{Status: model.RunOK, Finished: testNow,
+		Jobs: []refresh.JobOutcome{{Job: model.JobNames, Inserted: 4}}}}
+	m, _ := newRefreshModel(t, spy, c)
+	m = drive(m, m.Init())
+	if !strings.Contains(plain(m), "+4 new") {
+		t.Fatal("flash missing")
+	}
+	c.add(95 * time.Second)
+	next, _ := m.Update(tickMsg(c.now()))
+	m = next.(Model)
+	head := strings.Split(plain(m), "\n")[0]
+	if strings.Contains(head, "+4 new") {
+		t.Error("flash should expire")
+	}
+	if !strings.Contains(head, "(in 28:25)") {
+		t.Errorf("countdown missing: %q", head)
+	}
+}
+
+func TestFmtCountdown(t *testing.T) {
+	cases := map[time.Duration]string{
+		0: "0:00", 59 * time.Second: "0:59", 30 * time.Minute: "30:00",
+		90*time.Minute + 5*time.Second: "1:30:05",
+	}
+	for d, want := range cases {
+		if got := fmtCountdown(d); got != want {
+			t.Errorf("fmtCountdown(%v) = %q, want %q", d, got, want)
+		}
+	}
+}
+
+func TestHelpMentionsTmuxAttach(t *testing.T) {
+	m := New(Options{Store: newFakeStore(nil, nil), Instruments: testInstruments(), TmuxSession: "desk2"})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 50})
+	m = press(t, next.(Model), "?")
+	if !strings.Contains(plain(m), "tmux attach -t desk2") {
+		t.Error("help should mention tmux attach with the session name")
 	}
 }

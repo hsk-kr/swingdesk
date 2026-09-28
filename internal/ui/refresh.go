@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -10,12 +11,23 @@ import (
 	"github.com/hsk-kr/swingdesk/internal/refresh"
 )
 
-// RefreshFunc performs one blocking refresh. main binds it to the app
-// context so quitting cancels it.
-type RefreshFunc func() refresh.Outcome
+// RefreshFunc performs one blocking refresh, calling progress (from any
+// goroutine) as each agent job finishes. main binds it to the app context so
+// quitting cancels it.
+type RefreshFunc func(progress func(model.Job, error)) refresh.Outcome
 
-// tickMsg drives the schedule and (later) the countdown.
+// flashFor is how long the "+N new" header notice stays up.
+const flashFor = 10 * time.Second
+
+// tickMsg drives the schedule and the countdown.
 type tickMsg time.Time
+
+// jobDoneMsg reports one finished agent job; ch streams the rest.
+type jobDoneMsg struct {
+	job model.Job
+	err error
+	ch  <-chan tea.Msg
+}
 
 // refreshDoneMsg carries a finished refresh.
 type refreshDoneMsg struct{ out refresh.Outcome }
@@ -24,12 +36,44 @@ func defaultTick() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
+// runRefresh starts the refresh in a goroutine and streams jobDoneMsgs then
+// a refreshDoneMsg. The channel is buffered for every message so the
+// goroutine never blocks on a slow UI.
 func runRefresh(fn RefreshFunc) tea.Cmd {
-	return func() tea.Msg { return refreshDoneMsg{out: fn()} }
+	return func() tea.Msg {
+		ch := make(chan tea.Msg, len(model.Jobs())*2+1)
+		go func() {
+			defer close(ch)
+			out := fn(func(j model.Job, err error) { ch <- jobDoneMsg{job: j, err: err, ch: ch} })
+			ch <- refreshDoneMsg{out: out}
+		}()
+		return <-ch
+	}
+}
+
+// next waits for the following message on ch.
+func next(ch <-chan tea.Msg) tea.Cmd {
+	return func() tea.Msg {
+		msg, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return msg
+	}
+}
+
+// onJobDone drops a finished job from the header's running list.
+func (m Model) onJobDone(msg jobDoneMsg) (tea.Model, tea.Cmd) {
+	if m.status.Agents.State == model.AgentRunning {
+		running := slices.DeleteFunc(slices.Clone(m.status.Agents.Running), func(j model.Job) bool { return j == msg.job })
+		m.status.Agents = model.AgentStatus{State: model.AgentRunning, Running: running}
+	}
+	return m, next(msg.ch)
 }
 
 // onTick consults the schedule and re-arms the ticker.
 func (m Model) onTick(now time.Time) (tea.Model, tea.Cmd) {
+	m.clock = now
 	s, d := m.sched.Tick(now)
 	m.sched = s
 	m, cmd := m.decide(d)
@@ -59,9 +103,13 @@ func (m Model) decide(d refresh.Decision) (Model, tea.Cmd) {
 	return m, nil
 }
 
-// onRefreshDone records the outcome and reloads the inbox.
+// onRefreshDone records the outcome, flashes "+N new" and reloads the inbox.
 func (m Model) onRefreshDone(out refresh.Outcome) (tea.Model, tea.Cmd) {
 	m.sched = m.sched.Done()
+	m.clock = m.now()
+	if n := out.NewItems(); n > 0 {
+		m.flashN, m.flashUntil = n, m.clock.Add(flashFor)
+	}
 	m.status.LastRefresh = out.Finished
 	m.status.NextRefresh = m.sched.Next()
 	m.status.Agents = agentStatusFor(out)

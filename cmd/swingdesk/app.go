@@ -104,18 +104,35 @@ func (a *app) refresher() refresh.Refresher {
 func (a *app) runUI(start startUI) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	status, err := a.initialStatus(ctx)
+	if err != nil {
+		return err
+	}
 	r := a.refresher()
 	return start(ui.New(ui.Options{
 		Store:       db.NewStore(a.conn),
 		Instruments: a.instruments,
 		Location:    a.tz,
 		Interval:    a.cfg.RefreshInterval(),
-		Refresh:     func() refresh.Outcome { return r.Refresh(ctx) },
+		TmuxSession: a.cfg.TmuxSession,
+		Status:      status,
+		Refresh: func(progress func(model.Job, error)) refresh.Outcome {
+			return r.Refresh(ctx, func(res agent.Result) { progress(res.Job, res.Err) })
+		},
 	}))
 }
 
+// initialStatus shows the last finished run so a restart does not say "never".
+func (a *app) initialStatus(ctx context.Context) (ui.Status, error) {
+	last, ok, err := db.LastFinishedRun(ctx, a.conn)
+	if err != nil || !ok {
+		return ui.Status{}, err
+	}
+	return ui.Status{LastRefresh: last.FinishedAt}, nil
+}
+
 func (a *app) refreshOnce(ctx context.Context, out io.Writer) error {
-	o := a.refresher().Refresh(ctx)
+	o := a.refresher().Refresh(ctx, nil)
 	if o.Leftovers.Files > 0 {
 		fmt.Fprintf(out, "leftovers: %d files, %d new items\n", o.Leftovers.Files, o.Leftovers.Inserted)
 	}

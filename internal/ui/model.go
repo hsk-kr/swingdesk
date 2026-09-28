@@ -39,6 +39,7 @@ type Options struct {
 	Now         func() time.Time // defaults to time.Now
 	Refresh     RefreshFunc      // nil disables scheduling
 	Interval    time.Duration    // refresh interval (default 30m)
+	TmuxSession string           // shown in help as `tmux attach -t …`
 }
 
 // Model is the root Bubble Tea model. Update returns modified copies; slices
@@ -50,6 +51,10 @@ type Model struct {
 	refresh     RefreshFunc
 	sched       refresh.Schedule
 	tick        func() tea.Cmd
+	clock       time.Time // last tick; drives the countdown and flash
+	flashN      int
+	flashUntil  time.Time
+	session     string
 	instruments map[int64]model.Instrument
 	loc         *time.Location
 	status      Status
@@ -102,6 +107,8 @@ func New(opts Options) Model {
 		refresh:     opts.Refresh,
 		sched:       refresh.NewSchedule(interval),
 		tick:        defaultTick,
+		clock:       now(),
+		session:     opts.TmuxSession,
 		instruments: byID,
 		loc:         loc,
 		status:      opts.Status,
@@ -156,6 +163,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyMarked(msg)
 	case tickMsg:
 		return m.onTick(time.Time(msg))
+	case jobDoneMsg:
+		return m.onJobDone(msg)
 	case refreshDoneMsg:
 		return m.onRefreshDone(msg.out)
 	case tea.KeyPressMsg:

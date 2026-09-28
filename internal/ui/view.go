@@ -97,11 +97,51 @@ func (m Model) header() string {
 	parts := []part{
 		{styleBrand.Render("swingdesk"), 0},
 		{styleHeader.Render(fmt.Sprintf("unread %d", m.counts.Total)), 1},
-		{styleHeader.Render("last refresh " + m.fmtTimeOr(m.status.LastRefresh, "never")), 3},
-		{styleHeader.Render("next refresh " + m.fmtTimeOr(m.status.NextRefresh, "—")), 4},
-		{styleHeader.Render("agents " + m.status.Agents.String()), 2},
 	}
+	if m.flashN > 0 && m.clock.Before(m.flashUntil) {
+		parts = append(parts, part{styleFlash.Render(fmt.Sprintf("+%d new", m.flashN)), 1})
+	}
+	parts = append(parts,
+		part{styleHeader.Render("last refresh " + m.fmtTimeOr(m.status.LastRefresh, "never")), 4},
+		part{styleHeader.Render("next " + m.nextRefreshText()), 3},
+		part{m.agentsText(), 2},
+	)
 	return fitWidth(" "+joinFitting(parts, styleMuted.Render(" │ "), m.width-1), m.width)
+}
+
+// nextRefreshText is "12:11 (in 28:14)", or "—" before scheduling.
+func (m Model) nextRefreshText() string {
+	next := m.status.NextRefresh
+	if next.IsZero() {
+		return "—"
+	}
+	left := next.Sub(m.clock)
+	if left < 0 || m.sched.Running() {
+		return m.fmtTimeOr(next, "—")
+	}
+	return fmt.Sprintf("%s (in %s)", m.fmtTimeOr(next, "—"), fmtCountdown(left))
+}
+
+// fmtCountdown renders d as m:ss, or h:mm:ss past an hour.
+func fmtCountdown(d time.Duration) string {
+	sec := int(d.Round(time.Second).Seconds())
+	h, mm, ss := sec/3600, sec%3600/60, sec%60
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", h, mm, ss)
+	}
+	return fmt.Sprintf("%d:%02d", mm, ss)
+}
+
+func (m Model) agentsText() string {
+	text := "agents " + m.status.Agents.String()
+	switch m.status.Agents.State {
+	case model.AgentRunning:
+		return styleFlash.Render(text)
+	case model.AgentError:
+		return styleError.Render(text)
+	default:
+		return styleHeader.Render(text)
+	}
 }
 
 func (m Model) footer() string {
@@ -267,7 +307,7 @@ func (m Model) biasLines(it model.Item, w int) []string {
 		fmt.Sprintf(" %s %s  %s",
 			styleMuted.Render(sym+" stance:"),
 			stanceStyle(b.Stance).Render(string(b.Stance)),
-			styleMuted.Render(fmt.Sprintf("conf %.2f", b.Confidence))),
+			styleMuted.Render(fmt.Sprintf("conf %.2f · as of %s", b.Confidence, m.fmtTimeOr(b.CreatedAt, "—")))),
 	}
 	for _, l := range wrap(b.Rationale, w-2) {
 		if l != "" {
@@ -296,11 +336,22 @@ func (m Model) helpLines() []string {
 		" a          mark all visible read",
 		" u          undo last mark read",
 		" R          refresh now (resets the timer)",
+		"",
+		" " + styleHeading.Render("Watch the agents"),
+		" tmux attach -t " + m.sessionName(),
+		" " + styleMuted.Render("one window per job: market, tech, names"),
 		" ? / esc    close help (j/k scroll)",
 		" q          quit",
 		"",
 		" " + styleMuted.Render("Full keybinding list lands with the polish pass."),
 	}
+}
+
+func (m Model) sessionName() string {
+	if m.session == "" {
+		return "swingdesk"
+	}
+	return m.session
 }
 
 // scroll returns up to h lines starting at offset (clamped so the last page

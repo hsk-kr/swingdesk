@@ -28,7 +28,7 @@ type fakeRunner struct {
 	cancel  context.CancelFunc // if set, cancel ctx during Run
 }
 
-func (f fakeRunner) Run(ctx context.Context, runID int64, _ time.Time, instruments []model.Instrument) ([]agent.Result, error) {
+func (f fakeRunner) Run(ctx context.Context, runID int64, _ time.Time, instruments []model.Instrument, progress agent.Progress) ([]agent.Result, error) {
 	if f.gotRuns != nil {
 		*f.gotRuns = append(*f.gotRuns, runID)
 	}
@@ -57,6 +57,11 @@ func (f fakeRunner) Run(ctx context.Context, runID int64, _ time.Time, instrumen
 			return nil, err
 		}
 		out = append(out, agent.Result{Job: job, Path: path})
+	}
+	if progress != nil {
+		for _, r := range out {
+			progress(r)
+		}
 	}
 	return out, nil
 }
@@ -110,7 +115,7 @@ func runRow(t *testing.T, conn *sql.DB, id int64) (string, int, int, string) {
 
 func TestRefreshOK(t *testing.T) {
 	e := setup(t)
-	out := e.refresher(fakeRunner{inbox: e.inbox}).Refresh(context.Background())
+	out := e.refresher(fakeRunner{inbox: e.inbox}).Refresh(context.Background(), nil)
 	if out.Err != nil || out.Status != model.RunOK || out.RunID == 0 {
 		t.Fatalf("outcome = %+v", out)
 	}
@@ -130,7 +135,7 @@ func TestRefreshOK(t *testing.T) {
 		}
 	}
 	// A second refresh has no leftovers and dedupes the same stories.
-	out2 := e.refresher(fakeRunner{inbox: e.inbox}).Refresh(context.Background())
+	out2 := e.refresher(fakeRunner{inbox: e.inbox}).Refresh(context.Background(), nil)
 	if out2.Leftovers.Files != 0 || out2.NewItems() != 0 || out2.RunID == out.RunID {
 		t.Errorf("second outcome = %+v", out2)
 	}
@@ -138,7 +143,7 @@ func TestRefreshOK(t *testing.T) {
 
 func TestRefreshPartialAndError(t *testing.T) {
 	e := setup(t)
-	out := e.refresher(fakeRunner{inbox: e.inbox, fail: map[model.Job]error{model.JobTech: agent.ErrJobTimeout}}).Refresh(context.Background())
+	out := e.refresher(fakeRunner{inbox: e.inbox, fail: map[model.Job]error{model.JobTech: agent.ErrJobTimeout}}).Refresh(context.Background(), nil)
 	if out.Status != model.RunPartial {
 		t.Errorf("status = %s", out.Status)
 	}
@@ -147,7 +152,7 @@ func TestRefreshPartialAndError(t *testing.T) {
 		t.Errorf("row = %s %d %d %q", status, ok, fail, errText)
 	}
 
-	out = e.refresher(fakeRunner{inbox: e.inbox, runErr: agent.ErrTmuxNotFound}).Refresh(context.Background())
+	out = e.refresher(fakeRunner{inbox: e.inbox, runErr: agent.ErrTmuxNotFound}).Refresh(context.Background(), nil)
 	if !errors.Is(out.Err, agent.ErrTmuxNotFound) || out.Status != model.RunError {
 		t.Errorf("outcome = %+v", out)
 	}
@@ -160,7 +165,7 @@ func TestRefreshPartialAndError(t *testing.T) {
 func TestInvalidJobFileIsRejectedAndArchived(t *testing.T) {
 	e := setup(t)
 	r := badNamesRunner{fakeRunner{inbox: e.inbox}}
-	out := e.refresher(r).Refresh(context.Background())
+	out := e.refresher(r).Refresh(context.Background(), nil)
 	if out.Status != model.RunPartial {
 		t.Errorf("status = %s", out.Status)
 	}
@@ -172,8 +177,8 @@ func TestInvalidJobFileIsRejectedAndArchived(t *testing.T) {
 
 type badNamesRunner struct{ fakeRunner }
 
-func (b badNamesRunner) Run(ctx context.Context, runID int64, n time.Time, ins []model.Instrument) ([]agent.Result, error) {
-	res, err := b.fakeRunner.Run(ctx, runID, n, ins)
+func (b badNamesRunner) Run(ctx context.Context, runID int64, n time.Time, ins []model.Instrument, p agent.Progress) ([]agent.Result, error) {
+	res, err := b.fakeRunner.Run(ctx, runID, n, ins, p)
 	for _, r := range res {
 		if r.Job == model.JobNames {
 			if werr := copyFixture("invalid", r.Path); werr != nil {
@@ -187,7 +192,7 @@ func (b badNamesRunner) Run(ctx context.Context, runID int64, n time.Time, ins [
 func TestCancelledRefreshLeavesRunForLeftoverImport(t *testing.T) {
 	e := setup(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	out := e.refresher(fakeRunner{inbox: e.inbox, cancel: cancel}).Refresh(ctx)
+	out := e.refresher(fakeRunner{inbox: e.inbox, cancel: cancel}).Refresh(ctx, nil)
 	if !errors.Is(out.Err, context.Canceled) {
 		t.Fatalf("err = %v", out.Err)
 	}
@@ -206,7 +211,7 @@ func TestCancelledRefreshLeavesRunForLeftoverImport(t *testing.T) {
 	}
 	// Next launch: leftovers are ingested before the new run starts.
 	var runs []int64
-	next := e.refresher(fakeRunner{inbox: e.inbox, gotRuns: &runs}).Refresh(context.Background())
+	next := e.refresher(fakeRunner{inbox: e.inbox, gotRuns: &runs}).Refresh(context.Background(), nil)
 	if next.Leftovers.Files != 2 || next.Leftovers.Closed != 1 || next.Leftovers.Inserted != 5 {
 		t.Errorf("leftovers = %+v", next.Leftovers)
 	}
@@ -290,7 +295,7 @@ func abortItems(t *testing.T, conn *sql.DB) func() {
 func TestTransientIngestErrorKeepsFileForRetry(t *testing.T) {
 	e := setup(t)
 	restore := abortItems(t, e.conn)
-	out := e.refresher(fakeRunner{inbox: e.inbox}).Refresh(context.Background())
+	out := e.refresher(fakeRunner{inbox: e.inbox}).Refresh(context.Background(), nil)
 	if out.Status != model.RunError {
 		t.Fatalf("status = %s", out.Status)
 	}
@@ -328,7 +333,7 @@ func TestTransientLeftoverFailureDoesNotBlockRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	var runs []int64
-	out := e.refresher(fakeRunner{inbox: e.inbox, gotRuns: &runs}).Refresh(context.Background())
+	out := e.refresher(fakeRunner{inbox: e.inbox, gotRuns: &runs}).Refresh(context.Background(), nil)
 	if len(runs) != 1 || out.Leftovers.Failed != 1 {
 		t.Errorf("refresh must still run: runs=%v leftovers=%+v", runs, out.Leftovers)
 	}
@@ -340,9 +345,9 @@ func TestConcurrentRefreshIsBusy(t *testing.T) {
 	entered := make(chan struct{})
 	first := e.refresher(blockingRunner{entered: entered, release: release})
 	done := make(chan Outcome)
-	go func() { done <- first.Refresh(context.Background()) }()
+	go func() { done <- first.Refresh(context.Background(), nil) }()
 	<-entered
-	second := e.refresher(fakeRunner{inbox: e.inbox}).Refresh(context.Background())
+	second := e.refresher(fakeRunner{inbox: e.inbox}).Refresh(context.Background(), nil)
 	if !errors.Is(second.Err, ErrBusy) || second.RunID != 0 {
 		t.Errorf("second = %+v", second)
 	}
@@ -362,7 +367,7 @@ type blockingRunner struct {
 	release chan struct{}
 }
 
-func (b blockingRunner) Run(context.Context, int64, time.Time, []model.Instrument) ([]agent.Result, error) {
+func (b blockingRunner) Run(context.Context, int64, time.Time, []model.Instrument, agent.Progress) ([]agent.Result, error) {
 	close(b.entered)
 	<-b.release
 	return nil, agent.ErrClaudeNotFound
@@ -407,5 +412,14 @@ func TestLeftoverOlderThanRunIsNotCredited(t *testing.T) {
 	var credited int
 	if err := e.conn.QueryRow(`SELECT COUNT(*) FROM items WHERE run_id = ?`, id).Scan(&credited); err != nil || credited != 0 {
 		t.Errorf("items credited to unrelated run = %d %v", credited, err)
+	}
+}
+
+func TestRefreshReportsProgress(t *testing.T) {
+	e := setup(t)
+	var seen []model.Job
+	e.refresher(fakeRunner{inbox: e.inbox}).Refresh(context.Background(), func(r agent.Result) { seen = append(seen, r.Job) })
+	if len(seen) != 3 {
+		t.Errorf("progress = %v", seen)
 	}
 }
