@@ -49,7 +49,7 @@ func TestDefaults(t *testing.T) {
 }
 
 func TestLoadMissingFileUsesDefaults(t *testing.T) {
-	cfg, err := Load(filepath.Join(t.TempDir(), "nope.yaml"))
+	cfg, err := Load(Location{Path: filepath.Join(t.TempDir(), "nope.yaml")})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 func TestLoadOverridesAndKeepsDefaults(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
 	writeFile(t, p, "refresh_minutes: 15\nclaude_model: sonnet\n")
-	cfg, err := Load(p)
+	cfg, err := Load(Location{Path: p, Explicit: true})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -86,15 +86,50 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		"bad yaml":        "refresh_minutes: [\n",
 		"negative items":  "max_items_per_job: -1\n",
 		"empty claudebin": "claude_bin: \"\"\n",
+		"bypass mode":     "claude_permission_mode: bypassPermissions\n",
+		"local timezone":  "timezone: Local\n",
+		"relative data":   "data_dir: rel/data\n",
+		"second document": "refresh_minutes: 5\n---\nrefresh_minutes: 0\n",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
 			p := filepath.Join(t.TempDir(), "config.yaml")
 			writeFile(t, p, body)
-			if _, err := Load(p); err == nil {
+			if _, err := Load(Location{Path: p}); err == nil {
 				t.Fatal("expected error")
 			}
 		})
+	}
+}
+
+func TestLoadExplicitMissingFileFails(t *testing.T) {
+	loc := Location{Path: filepath.Join(t.TempDir(), "nope.yaml"), Explicit: true}
+	if _, err := Load(loc); err == nil {
+		t.Fatal("expected error for explicitly named missing file")
+	}
+}
+
+func TestLoadEmptyAndCommentOnlyFiles(t *testing.T) {
+	for name, body := range map[string]string{"empty": "", "comments": "# nothing here\n"} {
+		t.Run(name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "config.yaml")
+			writeFile(t, p, body)
+			cfg, err := Load(Location{Path: p, Explicit: true})
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg != Defaults() {
+				t.Errorf("cfg = %+v, want defaults", cfg)
+			}
+		})
+	}
+}
+
+func TestLoadAcceptsHomeRelativeDataDir(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, p, "data_dir: ~/sd\n")
+	if _, err := Load(Location{Path: p}); err != nil {
+		t.Fatalf("Load: %v", err)
 	}
 }
 
@@ -113,8 +148,9 @@ func TestResolvePaths(t *testing.T) {
 	home := "/home/u"
 	t.Run("defaults", func(t *testing.T) {
 		env := mapEnv(map[string]string{})
-		if got := ConfigPath(env, home); got != "/home/u/.config/swingdesk/config.yaml" {
-			t.Errorf("ConfigPath = %s", got)
+		want := Location{Path: "/home/u/.config/swingdesk/config.yaml"}
+		if got := ConfigPath("", env, home); got != want {
+			t.Errorf("ConfigPath = %+v", got)
 		}
 		if got := DataDir(Defaults(), env, home); got != "/home/u/.local/share/swingdesk" {
 			t.Errorf("DataDir = %s", got)
@@ -122,8 +158,8 @@ func TestResolvePaths(t *testing.T) {
 	})
 	t.Run("xdg", func(t *testing.T) {
 		env := mapEnv(map[string]string{"XDG_CONFIG_HOME": "/x/cfg", "XDG_DATA_HOME": "/x/data"})
-		if got := ConfigPath(env, home); got != "/x/cfg/swingdesk/config.yaml" {
-			t.Errorf("ConfigPath = %s", got)
+		if got := ConfigPath("", env, home); got.Path != "/x/cfg/swingdesk/config.yaml" || got.Explicit {
+			t.Errorf("ConfigPath = %+v", got)
 		}
 		if got := DataDir(Defaults(), env, home); got != "/x/data/swingdesk" {
 			t.Errorf("DataDir = %s", got)
@@ -131,8 +167,8 @@ func TestResolvePaths(t *testing.T) {
 	})
 	t.Run("relative xdg ignored", func(t *testing.T) {
 		env := mapEnv(map[string]string{"XDG_CONFIG_HOME": "rel", "XDG_DATA_HOME": "rel"})
-		if got := ConfigPath(env, home); got != "/home/u/.config/swingdesk/config.yaml" {
-			t.Errorf("ConfigPath = %s", got)
+		if got := ConfigPath("", env, home); got.Path != "/home/u/.config/swingdesk/config.yaml" {
+			t.Errorf("ConfigPath = %+v", got)
 		}
 		if got := DataDir(Defaults(), env, home); got != "/home/u/.local/share/swingdesk" {
 			t.Errorf("DataDir = %s", got)
@@ -140,8 +176,15 @@ func TestResolvePaths(t *testing.T) {
 	})
 	t.Run("explicit overrides", func(t *testing.T) {
 		env := mapEnv(map[string]string{"SWINGDESK_CONFIG": "/etc/sd.yaml", "XDG_DATA_HOME": "/x/data"})
-		if got := ConfigPath(env, home); got != "/etc/sd.yaml" {
-			t.Errorf("ConfigPath = %s", got)
+		if got := ConfigPath("", env, home); got != (Location{Path: "/etc/sd.yaml", Explicit: true}) {
+			t.Errorf("ConfigPath = %+v", got)
+		}
+		if got := ConfigPath("~/flag.yaml", env, home); got != (Location{Path: "/home/u/flag.yaml", Explicit: true}) {
+			t.Errorf("flag ConfigPath = %+v", got)
+		}
+		tilde := mapEnv(map[string]string{"SWINGDESK_CONFIG": "~/x.yaml"})
+		if got := ConfigPath("", tilde, home); got.Path != "/home/u/x.yaml" {
+			t.Errorf("env tilde ConfigPath = %+v", got)
 		}
 		cfg := Defaults()
 		cfg.DataDir = "/srv/sd"
@@ -156,6 +199,22 @@ func TestResolvePaths(t *testing.T) {
 			t.Errorf("DataDir = %s", got)
 		}
 	})
+}
+
+func TestResolvePathsAllFields(t *testing.T) {
+	cfg := Defaults()
+	cfg.DataDir = "/d"
+	got := ResolvePaths(cfg, "/c.yaml", mapEnv(nil), "/home/u")
+	want := Paths{
+		ConfigFile: "/c.yaml",
+		DataDir:    "/d",
+		DBFile:     "/d/swingdesk.db",
+		InboxDir:   "/d/inbox",
+		RunsDir:    "/d/runs",
+	}
+	if got != want {
+		t.Errorf("ResolvePaths = %+v, want %+v", got, want)
+	}
 }
 
 func mapEnv(m map[string]string) func(string) string {

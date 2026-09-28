@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"slices"
 	"time"
 
@@ -24,10 +25,15 @@ const (
 	PermissionDontAsk     PermissionMode = "dontAsk"
 )
 
-// PermissionModes is the closed set of accepted permission modes.
+// permissionModes is the closed set of accepted permission modes.
 // bypassPermissions is deliberately absent: use ClaudeSkipPermissions to opt in.
-var PermissionModes = [...]PermissionMode{
+var permissionModes = [...]PermissionMode{
 	PermissionDefault, PermissionAcceptEdits, PermissionPlan, PermissionDontAsk,
+}
+
+// Valid reports whether m is an accepted permission mode.
+func (m PermissionMode) Valid() bool {
+	return slices.Contains(permissionModes[:], m)
 }
 
 // Config is the user-facing configuration file shape.
@@ -57,19 +63,20 @@ func Defaults() Config {
 	}
 }
 
-// Load reads path over the defaults. A missing file yields defaults.
-func Load(path string) (Config, error) {
+// Load reads loc.Path over the defaults. A missing file yields defaults
+// only when the location is the implicit XDG fallback; an explicitly named
+// file (flag or $SWINGDESK_CONFIG) must exist.
+func Load(loc Location) (Config, error) {
+	path := loc.Path
 	cfg := Defaults()
 	raw, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
+	if errors.Is(err, fs.ErrNotExist) && !loc.Explicit {
 		return cfg, nil
 	}
 	if err != nil {
 		return Config{}, fmt.Errorf("read config %s: %w", path, err)
 	}
-	dec := yaml.NewDecoder(bytes.NewReader(raw))
-	dec.KnownFields(true)
-	if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
+	if err := decodeStrict(raw, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	if err := cfg.Validate(); err != nil {
@@ -78,13 +85,31 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
+// decodeStrict decodes a single YAML document, rejecting unknown fields and
+// any trailing documents. An empty file leaves cfg untouched.
+func decodeStrict(raw []byte, cfg *Config) error {
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	dec.KnownFields(true)
+	if err := dec.Decode(cfg); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		return err
+	}
+	var extra yaml.Node
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		return errors.New("config must contain exactly one YAML document")
+	}
+	return nil
+}
+
 // Validate checks field ranges and closed sets.
 func (c Config) Validate() error {
 	var errs []error
 	if c.RefreshMinutes < 1 {
 		errs = append(errs, fmt.Errorf("refresh_minutes must be >= 1, got %d", c.RefreshMinutes))
 	}
-	if _, err := time.LoadLocation(c.Timezone); err != nil || c.Timezone == "" {
+	if _, err := time.LoadLocation(c.Timezone); err != nil || c.Timezone == "" || c.Timezone == "Local" {
 		errs = append(errs, fmt.Errorf("timezone %q is not a valid IANA zone", c.Timezone))
 	}
 	if c.TmuxSession == "" {
@@ -93,11 +118,14 @@ func (c Config) Validate() error {
 	if c.ClaudeBin == "" {
 		errs = append(errs, errors.New("claude_bin must not be empty"))
 	}
-	if !slices.Contains(PermissionModes[:], c.ClaudePermissionMode) {
-		errs = append(errs, fmt.Errorf("claude_permission_mode %q must be one of %v", c.ClaudePermissionMode, PermissionModes))
+	if !c.ClaudePermissionMode.Valid() {
+		errs = append(errs, fmt.Errorf("claude_permission_mode %q must be one of %v", c.ClaudePermissionMode, permissionModes))
 	}
 	if c.MaxItemsPerJob < 1 {
 		errs = append(errs, fmt.Errorf("max_items_per_job must be >= 1, got %d", c.MaxItemsPerJob))
+	}
+	if c.DataDir != "" && !filepath.IsAbs(c.DataDir) && !isHomeRelative(c.DataDir) {
+		errs = append(errs, fmt.Errorf("data_dir %q must be absolute or start with ~/", c.DataDir))
 	}
 	return errors.Join(errs...)
 }

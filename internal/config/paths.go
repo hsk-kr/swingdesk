@@ -1,7 +1,6 @@
 package config
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 )
@@ -11,13 +10,24 @@ const appName = "swingdesk"
 // Getenv matches os.Getenv so tests can inject an environment.
 type Getenv func(string) string
 
-// ConfigPath resolves the config file: $SWINGDESK_CONFIG, then
+// Location is a config file path plus whether the user named it explicitly.
+type Location struct {
+	Path     string
+	Explicit bool
+}
+
+// ConfigPath resolves the config file: flagValue, then $SWINGDESK_CONFIG, then
 // $XDG_CONFIG_HOME/swingdesk/config.yaml, then ~/.config/swingdesk/config.yaml.
-func ConfigPath(getenv Getenv, home string) string {
-	if p := getenv("SWINGDESK_CONFIG"); p != "" {
-		return expandHome(p, home)
+func ConfigPath(flagValue string, getenv Getenv, home string) Location {
+	if flagValue != "" {
+		return Location{Path: expandHome(flagValue, home), Explicit: true}
 	}
-	return filepath.Join(xdgDir(getenv, "XDG_CONFIG_HOME", home, ".config"), appName, "config.yaml")
+	if p := getenv("SWINGDESK_CONFIG"); p != "" {
+		return Location{Path: expandHome(p, home), Explicit: true}
+	}
+	return Location{
+		Path: filepath.Join(xdgDir(getenv, "XDG_CONFIG_HOME", home, ".config"), appName, "config.yaml"),
+	}
 }
 
 // DataDir resolves the data directory: cfg.DataDir, then
@@ -35,6 +45,10 @@ func xdgDir(getenv Getenv, key, home, fallback string) string {
 		return v
 	}
 	return filepath.Join(home, fallback)
+}
+
+func isHomeRelative(p string) bool {
+	return p == "~" || strings.HasPrefix(p, "~/")
 }
 
 func expandHome(p, home string) string {
@@ -56,18 +70,14 @@ type Paths struct {
 	RunsDir    string
 }
 
-// ResolvePaths derives all paths for cfg from the real environment.
-func ResolvePaths(cfg Config, configFile string) (Paths, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return Paths{}, err
-	}
-	data := DataDir(cfg, os.Getenv, home)
+// ResolvePaths derives all on-disk paths for cfg.
+func ResolvePaths(cfg Config, configFile string, getenv Getenv, home string) Paths {
+	data := DataDir(cfg, getenv, home)
 	return Paths{
 		ConfigFile: configFile,
 		DataDir:    data,
 		DBFile:     filepath.Join(data, "swingdesk.db"),
 		InboxDir:   filepath.Join(data, "inbox"),
 		RunsDir:    filepath.Join(data, "runs"),
-	}, nil
+	}
 }

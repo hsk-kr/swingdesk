@@ -34,3 +34,22 @@ func TestRunBadConfig(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestRunHelpExitsCleanly(t *testing.T) {
+	if err := run([]string{"-h"}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("run -h: %v", err)
+	}
+}
+
+func TestRunRejectsPositionalArgs(t *testing.T) {
+	if err := run([]string{"extra"}, &bytes.Buffer{}); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestRunMissingExplicitConfig(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.yaml")
+	if err := run([]string{"-config", missing}, &bytes.Buffer{}); err == nil {
+		t.Fatal("expected error")
+	}
+}
