@@ -40,6 +40,9 @@ func TestDefaults(t *testing.T) {
 	if d.ClaudeSkipPermissions {
 		t.Error("ClaudeSkipPermissions must default to false")
 	}
+	if d.JobTimeout() != 8*time.Minute || d.ClaudeMaxBudgetUSD != 0 {
+		t.Errorf("JobTimeout = %v budget = %v", d.JobTimeout(), d.ClaudeMaxBudgetUSD)
+	}
 	if d.MaxItemsPerJob != 40 {
 		t.Errorf("MaxItemsPerJob = %d", d.MaxItemsPerJob)
 	}
@@ -87,6 +90,10 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		"negative items":  "max_items_per_job: -1\n",
 		"empty claudebin": "claude_bin: \"\"\n",
 		"bypass mode":     "claude_permission_mode: bypassPermissions\n",
+		"dotted session":  "tmux_session: sw.desk\n",
+		"stale default":   "claude_permission_mode: default\n",
+		"zero timeout":    "job_timeout_minutes: 0\n",
+		"negative budget": "claude_max_budget_usd: -1\n",
 		"local timezone":  "timezone: Local\n",
 		"relative data":   "data_dir: rel/data\n",
 		"second document": "refresh_minutes: 5\n---\nrefresh_minutes: 0\n",

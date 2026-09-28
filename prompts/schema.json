@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "swingdesk agent envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["job", "generated_at", "items", "biases"],
+  "properties": {
+    "job": { "type": "string", "enum": ["market", "tech", "names"] },
+    "generated_at": { "type": "string", "description": "RFC3339 timestamp with offset" },
+    "items": {
+      "type": "array",
+      "maxItems": 40,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["symbol", "category", "title", "summary", "body", "source", "url", "published_at", "event_at", "event_kind"],
+        "properties": {
+          "symbol": { "type": ["string", "null"], "description": "Watchlist symbol, or null for general tape items (market/tech jobs only)" },
+          "category": { "type": "string", "enum": ["tech", "market", "news", "opinion", "event", "valuation", "other"] },
+          "title": { "type": "string", "description": "Short factual headline" },
+          "summary": { "type": "string", "description": "2-4 sentences: what happened and why a swing trader cares" },
+          "body": { "type": "string", "description": "Optional extra context, short; empty string if none" },
+          "source": { "type": "string", "description": "Publisher name" },
+          "url": { "type": "string", "description": "Source URL; empty only for a dated calendar event" },
+          "published_at": { "type": ["string", "null"], "description": "RFC3339 or null" },
+          "event_at": { "type": ["string", "null"], "description": "RFC3339 or YYYY-MM-DD for dated events, else null" },
+          "event_kind": { "type": ["string", "null"], "enum": ["earnings", "product", "macro", "legal", "other", null] }
+        }
+      }
+    },
+    "biases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["symbol", "stance", "confidence", "rationale"],
+        "properties": {
+          "symbol": { "type": "string" },
+          "stance": { "type": "string", "enum": ["long", "short", "none"] },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "rationale": { "type": "string", "description": "One or two sentences" }
+        }
+      }
+    }
+  }
+}
