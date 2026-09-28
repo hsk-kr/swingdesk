@@ -152,10 +152,8 @@ claude_model: ""          # empty = CLI default
 claude_permission_mode: dontAsk
 max_items_per_job: 40
 data_dir: ""              # empty = XDG
-instruments:              # or include docs/WATCHLIST.yaml
-  - symbol: NVDA
-    name: Nvidia
-    kind: equity
+# Instruments are not in config: they are seeded into SQLite from
+# docs/WATCHLIST.yaml on first launch. See docs/config.example.yaml.
 ```
 
 ## Suggested repo layout when building starts
