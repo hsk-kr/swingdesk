@@ -50,10 +50,20 @@ func TestRunLifecycle(t *testing.T) {
 	if err := FinishRun(ctx, conn, Run{ID: 999, Status: model.RunOK}); err == nil {
 		t.Error("finishing a missing run should fail")
 	}
-	if ok, err := RunExists(ctx, conn, a); !ok || err != nil {
-		t.Error("run a should exist")
+	if at, ok, err := RunStartedAt(ctx, conn, a); !ok || err != nil || !at.Equal(t0) {
+		t.Errorf("run a started = %v %v %v", at, ok, err)
 	}
-	if ok, _ := RunExists(ctx, conn, 999); ok {
+	if _, ok, _ := RunStartedAt(ctx, conn, 999); ok {
 		t.Error("run 999 should not exist")
+	}
+	// Crediting never exceeds the job total.
+	for range 3 {
+		if err := RecordLateJob(ctx, conn, a, 3); err != nil {
+			t.Fatal(err)
+		}
+	}
+	last, _, _ = LastFinishedRun(ctx, conn)
+	if last.JobsOK != 3 || last.JobsFail != 0 || last.Status != model.RunOK {
+		t.Errorf("over-credited run = %+v", last)
 	}
 }

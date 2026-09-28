@@ -26,9 +26,10 @@ type Deps struct {
 	Runner   JobRunner
 	InboxDir string // data_dir/inbox
 	RunsDir  string // data_dir/runs (ingested files are archived here)
+	LockPath string // data_dir/refresh.lock
 	MaxItems int
 	Now      func() time.Time
-	Logger   *slog.Logger // ingest skips; nil = discard
+	Logger   *slog.Logger // ingest skips and leftover failures; nil = discard
 }
 
 // Refresher performs whole refreshes.
@@ -60,7 +61,7 @@ type Outcome struct {
 	Status    model.RunStatus
 	Jobs      []JobOutcome
 	Leftovers Leftovers
-	Err       error // run-level failure (tmux/claude missing, DB error)
+	Err       error // run-level failure (busy, tmux/claude missing, DB error)
 	Finished  time.Time
 }
 
@@ -73,26 +74,27 @@ func (o Outcome) NewItems() int {
 	return n
 }
 
-// Refresh imports leftover files from earlier sessions, then runs the agents
-// for a new refresh_runs row and ingests what they wrote. If ctx is cancelled
+// Refresh records a refresh_runs row, imports leftover files from earlier
+// sessions, runs the agents and ingests what they wrote. If ctx is cancelled
 // (quit) the run is left 'running' for the next launch to reconcile.
 func (r Refresher) Refresh(ctx context.Context) Outcome {
 	var out Outcome
-	left, err := r.ImportLeftovers(ctx)
-	out.Leftovers = left
+	lock, err := acquireLock(r.d.LockPath)
 	if err != nil {
-		out.Err = fmt.Errorf("import leftovers: %w", err)
+		out.Err, out.Status = err, model.RunError
 		return r.done(out)
 	}
-	instruments, err := enabledInstruments(ctx, r.d.Conn)
-	if err != nil {
-		out.Err = err
-		return r.done(out)
-	}
+	defer lock.release()
+
 	started := r.d.Now()
 	if out.RunID, err = db.StartRun(ctx, r.d.Conn, started); err != nil {
-		out.Err = err
+		out.Err, out.Status = err, model.RunError
 		return r.done(out)
+	}
+	out.Leftovers = r.ImportLeftovers(ctx, out.RunID)
+	instruments, err := enabledInstruments(ctx, r.d.Conn)
+	if err != nil {
+		return r.finish(ctx, out, err)
 	}
 	results, runErr := r.d.Runner.Run(ctx, out.RunID, started, instruments)
 	if ctx.Err() != nil {
@@ -119,9 +121,7 @@ func (r Refresher) finish(ctx context.Context, out Outcome, runErr error) Outcom
 	}
 	total := len(model.Jobs())
 	out.Status = model.RunStatusFor(ok, total)
-	if runErr != nil {
-		out.Err = runErr
-	}
+	out.Err = runErr
 	run := db.Run{ID: out.RunID, FinishedAt: r.d.Now(), Status: out.Status, Error: strings.Join(msgs, "; "), JobsOK: ok, JobsFail: total - ok}
 	if err := db.FinishRun(ctx, r.d.Conn, run); err != nil {
 		out.Err = errors.Join(out.Err, err)
@@ -134,17 +134,22 @@ func (r Refresher) done(out Outcome) Outcome {
 	return out
 }
 
-// ingestResult ingests one successful job file and archives it.
+// ingestResult ingests one successful job file. Invalid files are archived
+// as rejected; on transient errors (DB busy, cancel) the file stays in the
+// inbox so the next leftover import retries it.
 func (r Refresher) ingestResult(ctx context.Context, runID int64, res agent.Result) JobOutcome {
 	jo := JobOutcome{Job: res.Job, Err: res.Err}
 	if res.Err != nil {
 		return jo
 	}
 	ir, err := ingest.IngestFile(ctx, r.d.Conn, res.Path, r.ingestOptions(runID))
-	if archErr := archive(res.Path, r.d.RunsDir, runID, res.Job, err != nil); archErr != nil {
-		err = errors.Join(err, archErr)
-	}
 	jo.Err, jo.Inserted, jo.Updated, jo.Skipped = err, ir.Inserted, ir.Updated, len(ir.Skipped)
+	if err != nil && !errors.Is(err, ingest.ErrInvalidFile) {
+		return jo
+	}
+	if archErr := archive(res.Path, r.d.RunsDir, runID, res.Job, err != nil); archErr != nil {
+		r.d.Logger.Error("archive job file", "path", res.Path, "err", archErr)
+	}
 	return jo
 }
 

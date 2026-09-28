@@ -73,6 +73,7 @@ type env struct {
 	conn  *sql.DB
 	inbox string
 	runs  string
+	lock  string
 }
 
 func setup(t *testing.T) env {
@@ -88,11 +89,12 @@ func setup(t *testing.T) env {
 	if _, err := db.SeedInstruments(ctx, conn, seed); err != nil {
 		t.Fatal(err)
 	}
-	return env{conn: conn, inbox: filepath.Join(dir, "inbox"), runs: filepath.Join(dir, "runs")}
+	return env{conn: conn, inbox: filepath.Join(dir, "inbox"), runs: filepath.Join(dir, "runs"), lock: filepath.Join(dir, "refresh.lock")}
 }
 
 func (e env) refresher(r JobRunner) Refresher {
-	return New(Deps{Conn: e.conn, Runner: r, InboxDir: e.inbox, RunsDir: e.runs, MaxItems: 40, Now: func() time.Time { return now }})
+	return New(Deps{Conn: e.conn, Runner: r, InboxDir: e.inbox, RunsDir: e.runs, LockPath: e.lock,
+		MaxItems: 40, Now: func() time.Time { return now }})
 }
 
 func runRow(t *testing.T, conn *sql.DB, id int64) (string, int, int, string) {
@@ -234,9 +236,9 @@ func TestLeftoverFromUnknownRunDirIngestsWithoutRun(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(e.inbox, "notarun"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	left, err := e.refresher(fakeRunner{inbox: e.inbox}).ImportLeftovers(context.Background())
-	if err != nil || left.Files != 1 || left.Inserted != 2 {
-		t.Fatalf("leftovers = %+v, %v", left, err)
+	left := e.refresher(fakeRunner{inbox: e.inbox}).ImportLeftovers(context.Background(), 0)
+	if left.Files != 1 || left.Inserted != 2 || left.Failed != 0 {
+		t.Fatalf("leftovers = %+v", left)
 	}
 }
 
@@ -269,5 +271,141 @@ func TestSchedule(t *testing.T) {
 	}
 	if _, d := s.Tick(t0.Add(70 * time.Minute)); d != Start {
 		t.Errorf("tick at deadline = %v", d)
+	}
+}
+
+// abortItems makes every items insert fail, simulating a transient DB error.
+func abortItems(t *testing.T, conn *sql.DB) func() {
+	t.Helper()
+	if _, err := conn.Exec(`CREATE TRIGGER boom BEFORE INSERT ON items BEGIN SELECT RAISE(ABORT, 'disk hiccup'); END`); err != nil {
+		t.Fatal(err)
+	}
+	return func() {
+		if _, err := conn.Exec(`DROP TRIGGER boom`); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestTransientIngestErrorKeepsFileForRetry(t *testing.T) {
+	e := setup(t)
+	restore := abortItems(t, e.conn)
+	out := e.refresher(fakeRunner{inbox: e.inbox}).Refresh(context.Background())
+	if out.Status != model.RunError {
+		t.Fatalf("status = %s", out.Status)
+	}
+	id := strconv.FormatInt(out.RunID, 10)
+	for _, job := range model.Jobs() {
+		if _, err := os.Stat(filepath.Join(e.inbox, id, string(job)+".json")); err != nil {
+			t.Errorf("%s: valid file must stay in the inbox: %v", job, err)
+		}
+		if _, err := os.Stat(filepath.Join(e.runs, id, string(job)+".rejected.json")); !os.IsNotExist(err) {
+			t.Errorf("%s: must not be rejected", job)
+		}
+	}
+	restore()
+	left := e.refresher(fakeRunner{inbox: e.inbox}).ImportLeftovers(context.Background(), 0)
+	if left.Files != 3 || left.Inserted != 7 || left.Rejected != 0 {
+		t.Errorf("retry = %+v", left)
+	}
+	status, ok, _, _ := runRow(t, e.conn, out.RunID)
+	if status != "ok" || ok != 3 {
+		t.Errorf("run after retry = %s ok=%d", status, ok)
+	}
+}
+
+func TestTransientLeftoverFailureDoesNotBlockRefresh(t *testing.T) {
+	e := setup(t)
+	dir := filepath.Join(e.inbox, "77")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyFixture("tech", filepath.Join(dir, "tech.json")); err != nil {
+		t.Fatal(err)
+	}
+	// Archive target dir cannot be created: runs is a file.
+	if err := os.WriteFile(e.runs, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var runs []int64
+	out := e.refresher(fakeRunner{inbox: e.inbox, gotRuns: &runs}).Refresh(context.Background())
+	if len(runs) != 1 || out.Leftovers.Failed != 1 {
+		t.Errorf("refresh must still run: runs=%v leftovers=%+v", runs, out.Leftovers)
+	}
+}
+
+func TestConcurrentRefreshIsBusy(t *testing.T) {
+	e := setup(t)
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	first := e.refresher(blockingRunner{entered: entered, release: release})
+	done := make(chan Outcome)
+	go func() { done <- first.Refresh(context.Background()) }()
+	<-entered
+	second := e.refresher(fakeRunner{inbox: e.inbox}).Refresh(context.Background())
+	if !errors.Is(second.Err, ErrBusy) || second.RunID != 0 {
+		t.Errorf("second = %+v", second)
+	}
+	close(release)
+	if o := <-done; o.RunID == 0 {
+		t.Errorf("first = %+v", o)
+	}
+	// The first run was not reconciled as stale by the second process.
+	var status string
+	if err := e.conn.QueryRow(`SELECT status FROM refresh_runs WHERE id = 1`).Scan(&status); err != nil || status == "running" || status == "partial" {
+		t.Errorf("first run status = %q %v", status, err)
+	}
+}
+
+type blockingRunner struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b blockingRunner) Run(context.Context, int64, time.Time, []model.Instrument) ([]agent.Result, error) {
+	close(b.entered)
+	<-b.release
+	return nil, agent.ErrClaudeNotFound
+}
+
+func TestArchiveNeverOverwrites(t *testing.T) {
+	e := setup(t)
+	for i := range 3 {
+		src := filepath.Join(t.TempDir(), "f.json")
+		if err := os.WriteFile(src, []byte(strconv.Itoa(i)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := archive(src, e.runs, 5, model.JobTech, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"tech.json", "tech.2.json", "tech.3.json"} {
+		if _, err := os.Stat(filepath.Join(e.runs, "5", name)); err != nil {
+			t.Errorf("%s missing", name)
+		}
+	}
+}
+
+func TestLeftoverOlderThanRunIsNotCredited(t *testing.T) {
+	e := setup(t)
+	future := now.Add(24 * 365 * time.Hour * 2) // run "started" after the file was written
+	id, err := db.StartRun(context.Background(), e.conn, future)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(e.inbox, strconv.FormatInt(id, 10))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyFixture("tech", filepath.Join(dir, "tech.json")); err != nil {
+		t.Fatal(err)
+	}
+	left := e.refresher(fakeRunner{inbox: e.inbox}).ImportLeftovers(context.Background(), 0)
+	if left.Inserted != 2 {
+		t.Fatalf("leftovers = %+v", left)
+	}
+	var credited int
+	if err := e.conn.QueryRow(`SELECT COUNT(*) FROM items WHERE run_id = ?`, id).Scan(&credited); err != nil || credited != 0 {
+		t.Errorf("items credited to unrelated run = %d %v", credited, err)
 	}
 }

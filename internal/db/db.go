@@ -22,6 +22,9 @@ func Open(ctx context.Context, path string) (*sql.DB, error) {
 	q.Add("_pragma", "foreign_keys(1)")
 	q.Add("_pragma", "journal_mode(WAL)")
 	q.Add("_pragma", "busy_timeout(5000)")
+	// BEGIN IMMEDIATE: take the write lock up front so busy_timeout covers
+	// contention (a deferred read→write upgrade fails with SQLITE_BUSY at once).
+	q.Add("_txlock", "immediate")
 	// Build a proper URI so '#', '?' and '%' in the path are escaped.
 	dsn := (&url.URL{Scheme: "file", Path: path, RawQuery: q.Encode()}).String()
 

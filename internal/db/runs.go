@@ -56,11 +56,11 @@ func FinishRun(ctx context.Context, conn DBTX, run Run) error {
 // while it is still marked running) and recomputes a closed run's status.
 func RecordLateJob(ctx context.Context, conn DBTX, runID int64, totalJobs int) error {
 	_, err := conn.ExecContext(ctx, `UPDATE refresh_runs SET
-		jobs_ok   = jobs_ok + 1,
-		jobs_fail = MAX(jobs_fail - 1, 0),
+		jobs_ok   = MIN(jobs_ok + 1, ?1),
+		jobs_fail = MAX(MIN(jobs_fail, ?1 - MIN(jobs_ok + 1, ?1)), 0),
 		status    = CASE WHEN status = 'running' THEN status
-		                 WHEN jobs_ok + 1 >= ? THEN 'ok' ELSE 'partial' END
-		WHERE id = ?`, totalJobs, runID)
+		                 WHEN jobs_ok + 1 >= ?1 THEN 'ok' ELSE 'partial' END
+		WHERE id = ?2`, totalJobs, runID)
 	if err != nil {
 		return fmt.Errorf("record late job for run %d: %w", runID, err)
 	}
@@ -118,11 +118,16 @@ func LastFinishedRun(ctx context.Context, conn DBTX) (Run, bool, error) {
 	return r, true, nil
 }
 
-// RunExists reports whether a refresh_runs row with id exists.
-func RunExists(ctx context.Context, conn DBTX, id int64) (bool, error) {
-	var n int
-	if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM refresh_runs WHERE id = ?`, id).Scan(&n); err != nil {
-		return false, fmt.Errorf("check run %d: %w", id, err)
+// RunStartedAt returns when run id started, or ok=false if there is no such run.
+func RunStartedAt(ctx context.Context, conn DBTX, id int64) (time.Time, bool, error) {
+	var started string
+	err := conn.QueryRowContext(ctx, `SELECT started_at FROM refresh_runs WHERE id = ?`, id).Scan(&started)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, false, nil
 	}
-	return n > 0, nil
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("check run %d: %w", id, err)
+	}
+	t, err := parseTime(started)
+	return t, err == nil, err
 }

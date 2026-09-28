@@ -94,6 +94,7 @@ func (a *app) refresher() refresh.Refresher {
 	}, agent.ExecCommander{})
 	return refresh.New(refresh.Deps{
 		Conn: a.conn, Runner: runner, InboxDir: a.paths.InboxDir, RunsDir: a.paths.RunsDir,
+		LockPath: filepath.Join(a.paths.DataDir, "refresh.lock"),
 		MaxItems: a.cfg.MaxItemsPerJob, Logger: a.logger,
 	})
 }

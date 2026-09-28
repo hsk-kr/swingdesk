@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -53,6 +54,11 @@ type Result struct {
 	Warnings []Skip // items written with a field dropped
 }
 
+// ErrInvalidFile marks a job file that can never ingest (bad JSON, bad
+// envelope, claude error result). Other errors (I/O, DB, ctx) are transient
+// and the file should be retried.
+var ErrInvalidFile = errors.New("invalid job file")
+
 // IngestFile parses and ingests path.
 func IngestFile(ctx context.Context, conn *sql.DB, path string, opts Options) (Result, error) {
 	raw, err := os.ReadFile(path)
@@ -61,7 +67,7 @@ func IngestFile(ctx context.Context, conn *sql.DB, path string, opts Options) (R
 	}
 	env, err := Parse(raw)
 	if err != nil {
-		return Result{}, fmt.Errorf("%s: %w", path, err)
+		return Result{}, fmt.Errorf("%s: %w: %w", path, ErrInvalidFile, err)
 	}
 	return Ingest(ctx, conn, env, opts)
 }
