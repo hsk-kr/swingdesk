@@ -1,0 +1,11 @@
+# Copy to ~/.config/swingdesk/config.yaml (or $XDG_CONFIG_HOME/swingdesk/config.yaml).
+# Every key is optional; omitted keys use these defaults.
+refresh_minutes: 30
+timezone: Europe/London
+tmux_session: swingdesk
+claude_bin: claude
+claude_model: ""                  # empty = Claude Code CLI default
+claude_permission_mode: dontAsk   # default | acceptEdits | plan | dontAsk
+claude_dangerously_skip_permissions: false  # explicit opt-in only
+max_items_per_job: 40
+data_dir: ""                      # empty = $XDG_DATA_HOME/swingdesk or ~/.local/share/swingdesk
