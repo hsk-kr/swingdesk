@@ -86,3 +86,21 @@ func TestRunMissingExplicitConfig(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestRunInsertSample(t *testing.T) {
+	_, cfgPath := tempConfig(t, "")
+	var out bytes.Buffer
+	if err := run([]string{"-config", cfgPath, "-insert-sample"}, &out, noUI(t)); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(out.String(), "inserted 10 sample items") {
+		t.Errorf("output = %q", out.String())
+	}
+	out.Reset()
+	if err := run([]string{"-config", cfgPath, "-insert-sample"}, &out, noUI(t)); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "inserted 0 sample items") {
+		t.Errorf("second run output = %q", out.String())
+	}
+}

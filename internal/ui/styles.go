@@ -26,6 +26,8 @@ var (
 	styleSelDim   = lipgloss.NewStyle().Background(colorSelBg).Foreground(colorText)
 	styleHeader   = lipgloss.NewStyle().Foreground(colorText)
 	styleBrand    = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
+	styleNotice   = lipgloss.NewStyle().Foreground(colorBadge)
+	styleError    = lipgloss.NewStyle().Foreground(lipgloss.Color("#fb4934")).Bold(true)
 )
 
 // categoryColors must cover every model.Category (enforced by a test over

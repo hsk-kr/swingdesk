@@ -144,7 +144,7 @@ func applyOne(ctx context.Context, conn *sql.DB, m migration) error {
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)`,
-		m.version, m.name, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		m.version, m.name, formatTime(time.Now())); err != nil {
 		return fmt.Errorf("record migration %s: %w", m.name, err)
 	}
 	if err := tx.Commit(); err != nil {

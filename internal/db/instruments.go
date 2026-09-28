@@ -37,7 +37,7 @@ func SeedInstruments(ctx context.Context, conn *sql.DB, seed []model.Instrument)
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO app_meta (key, value) VALUES ('seeded_at', ?)`,
-		time.Now().UTC().Format(time.RFC3339)); err != nil {
+		formatTime(time.Now())); err != nil {
 		return false, fmt.Errorf("record seed marker: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
