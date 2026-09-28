@@ -23,7 +23,7 @@ const (
 type Status struct {
 	LastRefresh time.Time // zero = never
 	NextRefresh time.Time // zero = not scheduled
-	Agents      string
+	Agents      model.AgentStatus
 }
 
 // Options configures a new Model.
@@ -52,6 +52,7 @@ type Model struct {
 	detailScroll int
 	focus        pane
 	showHelp     bool
+	helpScroll   int
 
 	width, height int
 }
@@ -70,17 +71,13 @@ func New(opts Options) Model {
 	if biases == nil {
 		biases = map[int64]model.Bias{}
 	}
-	status := opts.Status
-	if status.Agents == "" {
-		status.Agents = "idle"
-	}
 	m := Model{
 		keys:        defaultKeys(),
 		instruments: byID,
 		items:       opts.Items,
 		biases:      biases,
 		loc:         loc,
-		status:      status,
+		status:      opts.Status,
 		filters:     buildFilters(opts.Instruments),
 		focus:       paneInbox,
 	}
@@ -122,20 +119,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	k := m.keys
 	if m.showHelp {
-		if key.Matches(msg, k.Help, k.Back) {
-			m.showHelp = false
-			return m, nil
-		}
-		if key.Matches(msg, k.Quit) {
-			return m, tea.Quit
-		}
-		return m, nil
+		return m.handleHelpKey(msg)
 	}
 	switch {
 	case key.Matches(msg, k.Quit):
 		return m, tea.Quit
 	case key.Matches(msg, k.Help):
 		m.showHelp = true
+		m.helpScroll = 0
 	case key.Matches(msg, k.NextPane):
 		m.focus = (m.focus + 1) % paneCount
 	case key.Matches(msg, k.PrevPane):
@@ -156,6 +147,27 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.move(-1 << 30), nil
 	case key.Matches(msg, k.Bottom):
 		return m.move(1 << 30), nil
+	}
+	return m, nil
+}
+
+// handleHelpKey scrolls or closes the help view; other keys are ignored.
+func (m Model) handleHelpKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	k := m.keys
+	maxScroll := m.maxHelpScroll()
+	switch {
+	case key.Matches(msg, k.Quit):
+		return m, tea.Quit
+	case key.Matches(msg, k.Help, k.Back):
+		m.showHelp = false
+	case key.Matches(msg, k.Down):
+		m.helpScroll = clamp(m.helpScroll+1, 0, maxScroll)
+	case key.Matches(msg, k.Up):
+		m.helpScroll = clamp(m.helpScroll-1, 0, maxScroll)
+	case key.Matches(msg, k.Top):
+		m.helpScroll = 0
+	case key.Matches(msg, k.Bottom):
+		m.helpScroll = maxScroll
 	}
 	return m, nil
 }

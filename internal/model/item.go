@@ -65,3 +65,9 @@ type Bias struct {
 	Rationale    string
 	CreatedAt    time.Time
 }
+
+// Categories returns every category in display order.
+func Categories() []Category { return slices.Clone(categories[:]) }
+
+// Stances returns every stance.
+func Stances() []Stance { return slices.Clone(stances[:]) }

@@ -28,7 +28,8 @@ var (
 	styleBrand    = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
 )
 
-// categoryColors must cover every model.Category (enforced by a test).
+// categoryColors must cover every model.Category (enforced by a test over
+// model.Categories()); categoryStyle falls back to plain text regardless.
 var categoryColors = map[model.Category]color.Color{
 	model.CategoryTech:      lipgloss.Color("#83a598"),
 	model.CategoryMarket:    lipgloss.Color("#d3869b"),
@@ -47,9 +48,17 @@ var stanceColors = map[model.Stance]color.Color{
 }
 
 func categoryStyle(c model.Category) lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(categoryColors[c])
+	col, ok := categoryColors[c]
+	if !ok {
+		col = colorText
+	}
+	return lipgloss.NewStyle().Foreground(col)
 }
 
 func stanceStyle(s model.Stance) lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(stanceColors[s]).Bold(true)
+	col, ok := stanceColors[s]
+	if !ok {
+		col = colorText
+	}
+	return lipgloss.NewStyle().Foreground(col).Bold(true)
 }

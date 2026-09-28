@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -37,11 +38,11 @@ func (m Model) render() string {
 	l := m.layout()
 	left := box("Watchlist", m.filterLines(l.leftW-2, l.bodyH-2), l.leftW, l.bodyH, m.focus == paneFilters)
 	inbox := box(m.inboxTitle(), m.inboxLines(l.rightW-2, l.inboxH-2), l.rightW, l.inboxH, m.focus == paneInbox)
-	detailBody := m.detailLines(l.rightW - 2)
+	detailBody, offset := m.detailLines(l.rightW-2), m.detailScroll
 	if m.showHelp {
-		detailBody = m.helpLines()
+		detailBody, offset = m.helpLines(), m.helpScroll
 	}
-	detail := box(m.detailTitle(), scroll(detailBody, m.detailScroll, l.detailH-2), l.rightW, l.detailH, m.focus == paneDetail || m.showHelp)
+	detail := box(m.detailTitle(), scroll(detailBody, offset, l.detailH-2), l.rightW, l.detailH, m.focus == paneDetail || m.showHelp)
 
 	right := inbox + "\n" + detail
 	body := joinColumns(left, right)
@@ -73,6 +74,14 @@ func (m Model) maxDetailScroll() int {
 	return max(len(m.detailLines(l.rightW-2))-(l.detailH-2), 0)
 }
 
+// maxHelpScroll is the largest useful help scroll offset.
+func (m Model) maxHelpScroll() int {
+	if m.width < minWidth || m.height < minHeight {
+		return 0
+	}
+	return max(len(m.helpLines())-(m.layout().detailH-2), 0)
+}
+
 func (m Model) inboxTitle() string {
 	return fmt.Sprintf("Inbox · %s · unread %d", m.filters[m.filterCursor].Label, len(m.visible))
 }
@@ -85,20 +94,52 @@ func (m Model) detailTitle() string {
 }
 
 func (m Model) header() string {
-	sep := styleMuted.Render(" │ ")
-	parts := []string{
-		styleBrand.Render("swingdesk"),
-		styleHeader.Render(fmt.Sprintf("unread %d", len(m.items))),
-		styleHeader.Render("last refresh " + m.fmtTimeOr(m.status.LastRefresh, "never")),
-		styleHeader.Render("next refresh " + m.fmtTimeOr(m.status.NextRefresh, "—")),
-		styleHeader.Render("agents " + m.status.Agents),
+	parts := []part{
+		{styleBrand.Render("swingdesk"), 0},
+		{styleHeader.Render(fmt.Sprintf("unread %d", len(m.items))), 1},
+		{styleHeader.Render("last refresh " + m.fmtTimeOr(m.status.LastRefresh, "never")), 3},
+		{styleHeader.Render("next refresh " + m.fmtTimeOr(m.status.NextRefresh, "—")), 4},
+		{styleHeader.Render("agents " + m.status.Agents.String()), 2},
 	}
-	return fitWidth(" "+strings.Join(parts, sep), m.width)
+	return fitWidth(" "+joinFitting(parts, styleMuted.Render(" │ "), m.width-1), m.width)
 }
 
 func (m Model) footer() string {
-	hints := []string{"j/k move", "h/l pane", "tab next", "enter open", "g/G top/bottom", "? help", "q quit"}
-	return fitWidth(styleMuted.Render(" "+strings.Join(hints, " · ")), m.width)
+	parts := []part{
+		{"j/k move", 1}, {"h/l pane", 2}, {"tab next", 4}, {"enter open", 3},
+		{"g/G top/bottom", 5}, {"? help", 0}, {"q quit", 0},
+	}
+	return fitWidth(styleMuted.Render(" "+joinFitting(parts, " · ", m.width-1)), m.width)
+}
+
+// part is a header/footer segment; higher drop values are dropped first when
+// the line does not fit.
+type part struct {
+	text string
+	drop int
+}
+
+// joinFitting joins parts with sep, dropping the highest-drop parts (keeping
+// order) until the result fits in width.
+func joinFitting(parts []part, sep string, width int) string {
+	keep := slices.Clone(parts)
+	for {
+		texts := make([]string, len(keep))
+		for i, p := range keep {
+			texts[i] = p.text
+		}
+		line := strings.Join(texts, sep)
+		if ansi.StringWidth(line) <= width || len(keep) <= 1 {
+			return line
+		}
+		worst := 0
+		for i, p := range keep {
+			if p.drop >= keep[worst].drop {
+				worst = i
+			}
+		}
+		keep = slices.Delete(keep, worst, worst+1)
+	}
 }
 
 func (m Model) fmtTimeOr(t time.Time, fallback string) string {
@@ -170,7 +211,7 @@ func (m Model) detailLines(w int) []string {
 	var lines []string
 	add := func(s string) { lines = append(lines, s) }
 	addWrapped := func(s string, style func(...string) string) {
-		for _, l := range strings.Split(ansi.Wordwrap(s, max(w-2, 10), " -"), "\n") {
+		for _, l := range wrap(s, w-2) {
 			add(" " + style(l))
 		}
 	}
@@ -189,7 +230,7 @@ func (m Model) detailLines(w int) []string {
 	}
 	add(" " + styleMuted.Render(strings.Join(meta, " · ")))
 	if it.URL != "" {
-		add(" " + styleMuted.Render(it.URL))
+		addWrapped(it.URL, styleMuted.Render)
 	}
 	add("")
 	if it.Summary != "" {
@@ -215,12 +256,18 @@ func (m Model) biasLines(it model.Item, w int) []string {
 			stanceStyle(b.Stance).Render(string(b.Stance)),
 			styleMuted.Render(fmt.Sprintf("conf %.2f", b.Confidence))),
 	}
-	for _, l := range strings.Split(ansi.Wordwrap(b.Rationale, max(w-2, 10), " -"), "\n") {
+	for _, l := range wrap(b.Rationale, w-2) {
 		if l != "" {
 			out = append(out, " "+styleText.Render(l))
 		}
 	}
 	return out
+}
+
+// wrap word-wraps s to w cells, hard-breaking words (e.g. URLs) that are
+// longer than a line.
+func wrap(s string, w int) []string {
+	return strings.Split(ansi.Wrap(s, max(w, 10), " -"), "\n")
 }
 
 func (m Model) helpLines() []string {
@@ -232,7 +279,7 @@ func (m Model) helpLines() []string {
 		" enter      open detail",
 		" esc        back",
 		" g / G      top / bottom",
-		" ? / esc    close help",
+		" ? / esc    close help (j/k scroll)",
 		" q          quit",
 		"",
 		" " + styleMuted.Render("Full keybinding list lands with the polish pass."),

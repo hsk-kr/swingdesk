@@ -86,13 +86,12 @@ func TestFixturesResolveInstruments(t *testing.T) {
 }
 
 func TestStyleMapsCoverClosedSets(t *testing.T) {
-	for _, c := range []model.Category{model.CategoryTech, model.CategoryMarket, model.CategoryNews,
-		model.CategoryOpinion, model.CategoryEvent, model.CategoryValuation, model.CategoryOther} {
+	for _, c := range model.Categories() {
 		if _, ok := categoryColors[c]; !ok {
 			t.Errorf("no color for category %q", c)
 		}
 	}
-	for _, s := range []model.Stance{model.StanceLong, model.StanceShort, model.StanceNone} {
+	for _, s := range model.Stances() {
 		if _, ok := stanceColors[s]; !ok {
 			t.Errorf("no color for stance %q", s)
 		}
@@ -293,5 +292,126 @@ func TestScrollWindow(t *testing.T) {
 		if s != c.start || e != c.end {
 			t.Errorf("scrollWindow(%d,%d,%d) = %d,%d want %d,%d", c.cursor, c.n, c.h, s, e, c.start, c.end)
 		}
+	}
+}
+
+func assertFrame(t *testing.T, m Model, w, h int) {
+	t.Helper()
+	lines := strings.Split(plain(m), "\n")
+	if len(lines) != h {
+		t.Errorf("%dx%d: %d lines", w, h, len(lines))
+	}
+	for i, l := range lines {
+		if got := ansi.StringWidth(l); got != w {
+			t.Errorf("%dx%d: line %d width %d: %q", w, h, i, got, l)
+		}
+	}
+}
+
+func TestFrameExactAtManySizes(t *testing.T) {
+	for _, sz := range [][2]int{{60, 14}, {61, 15}, {73, 17}, {99, 31}, {60, 40}, {150, 14}, {200, 60}} {
+		m := newTestModel(t, sz[0], sz[1])
+		assertFrame(t, m, sz[0], sz[1])
+		assertFrame(t, press(t, m, "l"), sz[0], sz[1])
+		assertFrame(t, press(t, m, "?"), sz[0], sz[1])
+	}
+}
+
+func TestWideCharactersFit(t *testing.T) {
+	ins := testInstruments()
+	items := []model.Item{{
+		ID: 1, InstrumentID: 1, Symbol: "NVDA", Category: model.CategoryNews,
+		Title:   "エヌビディア 株価 急騰 🚀🚀 データセンター需要が過去最高を更新し続ける",
+		Summary: "韓国 SK하이닉스 HBM 공급 부족 지속 🚀 " + strings.Repeat("広い文字 ", 30),
+		URL:     "https://example.com/" + strings.Repeat("very-long-path-segment-", 12),
+	}}
+	for _, sz := range [][2]int{{60, 14}, {87, 20}, {120, 40}} {
+		m := New(Options{Instruments: ins, Items: items, Location: time.UTC})
+		next, _ := m.Update(tea.WindowSizeMsg{Width: sz[0], Height: sz[1]})
+		assertFrame(t, next.(Model), sz[0], sz[1])
+	}
+}
+
+func TestLongURLIsWrappedNotTruncated(t *testing.T) {
+	url := "https://example.com/" + strings.Repeat("abcdefghij", 15)
+	lines := wrap(url, 40)
+	if len(lines) < 4 || strings.Join(lines, "") != url {
+		t.Errorf("wrap lost characters: %q", lines)
+	}
+	for _, l := range lines {
+		if ansi.StringWidth(l) > 40 {
+			t.Errorf("line too wide: %q", l)
+		}
+	}
+}
+
+func TestHelpScrollsIndependently(t *testing.T) {
+	m := newTestModel(t, 60, 14)
+	m = press(t, m, "l", "j", "j", "j")
+	m = press(t, m, "?")
+	if m.helpScroll != 0 || !strings.Contains(plain(m), "Keys") {
+		t.Fatal("help must open at the top regardless of detail scroll")
+	}
+	if m.maxHelpScroll() == 0 {
+		t.Fatal("help should overflow at 60x14")
+	}
+	m = press(t, m, "G")
+	if !strings.Contains(plain(m), "q          quit") {
+		t.Error("G should reveal the end of help")
+	}
+	m = press(t, m, "g")
+	if m.helpScroll != 0 {
+		t.Error("g should return to top of help")
+	}
+	m = press(t, m, "j")
+	if m.helpScroll != 1 {
+		t.Error("j should scroll help")
+	}
+}
+
+func TestNarrowHeaderKeepsAgentsAndFooterKeepsHelpQuit(t *testing.T) {
+	m := newTestModel(t, 60, 14)
+	lines := strings.Split(plain(m), "\n")
+	if !strings.Contains(lines[0], "agents idle") || !strings.Contains(lines[0], "unread 10") {
+		t.Errorf("header = %q", lines[0])
+	}
+	last := lines[len(lines)-1]
+	if !strings.Contains(last, "? help") || !strings.Contains(last, "q quit") {
+		t.Errorf("footer = %q", last)
+	}
+}
+
+func TestHeaderShowsAgentStatus(t *testing.T) {
+	m := New(Options{
+		Instruments: testInstruments(),
+		Location:    time.UTC,
+		Status: Status{
+			LastRefresh: testNow,
+			NextRefresh: testNow.Add(30 * time.Minute),
+			Agents:      model.AgentStatus{State: model.AgentError, Err: "tmux not found"},
+		},
+	})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 20})
+	head := strings.Split(plain(next.(Model)), "\n")[0]
+	for _, want := range []string{"last refresh 11:41", "next refresh 12:11", "agents error: tmux not found"} {
+		if !strings.Contains(head, want) {
+			t.Errorf("header missing %q: %q", want, head)
+		}
+	}
+}
+
+func TestJoinFittingDropsByPriority(t *testing.T) {
+	parts := []part{{"aaaa", 0}, {"bbbb", 2}, {"cccc", 1}}
+	if got := joinFitting(parts, " ", 100); got != "aaaa bbbb cccc" {
+		t.Errorf("fits: %q", got)
+	}
+	if got := joinFitting(parts, " ", 10); got != "aaaa cccc" {
+		t.Errorf("drop b: %q", got)
+	}
+	if got := joinFitting(parts, " ", 5); got != "aaaa" {
+		t.Errorf("drop to one: %q", got)
+	}
+	if len(parts) != 3 {
+		t.Error("input must not be mutated")
 	}
 }
