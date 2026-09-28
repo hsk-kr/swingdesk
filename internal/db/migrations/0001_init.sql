@@ -1,7 +1,5 @@
--- swingdesk v1 schema. Canonical source: internal/db/migrations (0001_init.sql mirrors this file; a test enforces it).
+-- 0001: initial swingdesk schema (mirrors docs/SCHEMA.sql without PRAGMAs, which are set per connection).
 
-PRAGMA foreign_keys = ON;
-PRAGMA journal_mode = WAL;
 
 CREATE TABLE IF NOT EXISTS instruments (
   id            INTEGER PRIMARY KEY,
