@@ -30,13 +30,14 @@ func checkItem(job model.Job, it RawItem, known map[string]model.Instrument) (st
 	if strings.TrimSpace(it.Title) == "" {
 		return "", errors.New("empty title")
 	}
-	if it.URL == "" {
+	link := strings.TrimSpace(it.URL)
+	if link == "" {
 		if at, err := parseWhen(it.EventAt); err != nil || at.IsZero() {
 			return "", errors.New("no url and not a dated event")
 		}
 	}
-	if it.URL != "" && !isHTTPURL(it.URL) {
-		return "", fmt.Errorf("url %q is not http(s)", it.URL)
+	if link != "" && !isHTTPURL(link) {
+		return "", fmt.Errorf("url %q is not http(s)", link)
 	}
 	return sym, nil
 }

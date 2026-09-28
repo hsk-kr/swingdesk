@@ -212,7 +212,14 @@ func TestParseUnwrapVariants(t *testing.T) {
 		"claude error":    {raw: `{"type":"result","is_error":true,"result":"Not logged in"}`, wantErr: "Not logged in"},
 		"no payload":      {raw: `{"type":"result","is_error":false}`, wantErr: "neither"},
 		"not json":        {raw: `nope`, wantErr: "decode"},
-		"missing gen at":  {raw: `{"job":"tech","items":[]}`, wantErr: "generated_at"},
+		"missing gen at":  {raw: `{"job":"tech","items":[],"biases":[]}`, wantErr: "generated_at"},
+		"missing lists":   {raw: `{"job":"tech","generated_at":"2026-09-27T12:00:00Z"}`, wantErr: `missing "items"`},
+		"null biases":     {raw: `{"job":"tech","generated_at":"2026-09-27T12:00:00Z","items":[],"biases":null}`, wantErr: `missing "biases"`},
+		"prose + fence":   {raw: `{"type":"result","is_error":false,"result":` + quote("Here is the envelope:\n```json\n"+env+"\n```") + `}`},
+		"trailing prose":  {raw: `{"type":"result","is_error":false,"result":` + quote(env+"\n\nLet me know if you need more.") + `}`},
+		"one-line fence":  {raw: `{"type":"result","is_error":false,"result":` + quote("```json "+env+"```") + `}`},
+		"brace in prose":  {raw: `{"type":"result","is_error":false,"result":` + quote("Note {not json} then "+env) + `}`},
+		"no object":       {raw: `{"type":"result","is_error":false,"result":"I could not find news."}`, wantErr: "no JSON object"},
 		"wrong item type": {raw: `{"job":"tech","generated_at":"2026-09-27T12:00:00Z","items":{}}`, wantErr: "decode envelope"},
 	}
 	for name, c := range cases {
@@ -273,5 +280,76 @@ func TestEventKindFallback(t *testing.T) {
 	s := func(v string) *string { return &v }
 	if eventKind(nil) != model.EventOther || eventKind(s("IPO")) != model.EventOther || eventKind(s("Earnings")) != model.EventEarnings {
 		t.Error("event kind mapping wrong")
+	}
+}
+
+func TestBadTimestampsAreReportedNotSilent(t *testing.T) {
+	conn := openDB(t)
+	raw := `{"job":"names","generated_at":"2026-09-27T12:00:00Z","items":[
+	  {"symbol":"NVDA","category":"event","title":"Earnings","summary":"s","source":"IR","url":"https://example.com/e",
+	   "published_at":"last week","event_at":"2026-10-28T20:00","event_kind":"earnings"}],"biases":[]}`
+	env, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Ingest(context.Background(), conn, env, Options{Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Inserted != 1 || res.Events != 0 || len(res.Warnings) != 2 {
+		t.Fatalf("result = %+v", res)
+	}
+	kinds := []SkipKind{res.Warnings[0].Kind, res.Warnings[1].Kind}
+	if kinds[0] != SkipPublishedAt || kinds[1] != SkipEvent || res.Warnings[1].Symbol != "NVDA" {
+		t.Errorf("warnings = %+v", res.Warnings)
+	}
+}
+
+func TestUpdateWithEmptyFieldsKeepsData(t *testing.T) {
+	conn := openDB(t)
+	raw := `{"job":"names","generated_at":"2026-09-27T12:00:00Z","items":[
+	  {"symbol":"NVDA","category":"news","title":"Dup","summary":"s","body":"b","source":"R","url":"https://example.com/d"},
+	  {"symbol":"NVDA","category":"news","title":"  dup ","summary":"s2","body":"","source":"","url":"https://example.com/d"}],"biases":[]}`
+	env, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Ingest(context.Background(), conn, env, Options{Now: now})
+	if err != nil || res.Inserted != 1 || res.Updated != 1 {
+		t.Fatalf("res = %+v, %v", res, err)
+	}
+	var summary, body, source string
+	if err := conn.QueryRow(`SELECT summary, body, source FROM items`).Scan(&summary, &body, &source); err != nil {
+		t.Fatal(err)
+	}
+	if summary != "s2" || body != "b" || source != "R" {
+		t.Errorf("row = %q %q %q", summary, body, source)
+	}
+}
+
+func TestDuplicateBiasInFileSkipped(t *testing.T) {
+	conn := openDB(t)
+	raw := `{"job":"names","generated_at":"2026-09-27T12:00:00Z","items":[],"biases":[
+	  {"symbol":"NVDA","stance":"long","confidence":0.4,"rationale":"a"},
+	  {"symbol":"nvda","stance":"short","confidence":0.5,"rationale":"b"}]}`
+	env, _ := Parse([]byte(raw))
+	res, err := Ingest(context.Background(), conn, env, Options{Now: now})
+	if err != nil || res.Biases != 1 || len(res.Skipped) != 1 || !strings.Contains(res.Skipped[0].Reason, "duplicate") {
+		t.Errorf("res = %+v, %v", res, err)
+	}
+}
+
+func TestWhitespaceURLTreatedAsMissing(t *testing.T) {
+	s := func(v string) *string { return &v }
+	it := RawItem{Category: "event", Title: "t", URL: "   ", EventAt: s("2026-10-01")}
+	if _, err := checkItem(model.JobTech, it, nil); err != nil {
+		t.Errorf("dated event with blank url should pass: %v", err)
+	}
+}
+
+func TestTruncateRuneSafe(t *testing.T) {
+	got := truncate("가나다라마", 3)
+	if got != "가나다…" {
+		t.Errorf("truncate = %q", got)
 	}
 }

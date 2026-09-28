@@ -64,10 +64,26 @@ func Parse(raw []byte) (Envelope, error) {
 	if err := json.Unmarshal(body, &env); err != nil {
 		return Envelope{}, fmt.Errorf("decode envelope: %w", err)
 	}
-	if err := env.validate(); err != nil {
+	if err := errors.Join(requireKeys(body, "items", "biases"), env.validate()); err != nil {
 		return Envelope{}, err
 	}
 	return env, nil
+}
+
+// requireKeys rejects envelopes missing a list key (an explicit [] is fine),
+// so a truncated or mis-shaped payload is not mistaken for an empty run.
+func requireKeys(body []byte, keys ...string) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return fmt.Errorf("decode envelope: %w", err)
+	}
+	var errs []error
+	for _, k := range keys {
+		if v, ok := fields[k]; !ok || bytes.Equal(v, []byte("null")) {
+			errs = append(errs, fmt.Errorf("envelope is missing %q", k))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func unwrap(raw []byte) ([]byte, error) {
@@ -89,22 +105,26 @@ func unwrap(raw []byte) ([]byte, error) {
 		return probe.StructuredOutput, nil
 	}
 	if probe.Result != nil {
-		return []byte(stripFence(*probe.Result)), nil
+		return firstJSONObject(*probe.Result)
 	}
 	return nil, errors.New("claude result has neither structured_output nor result")
 }
 
-// stripFence removes a ```json ... ``` wrapper if the model added one.
-func stripFence(s string) string {
-	s = strings.TrimSpace(s)
-	if !strings.HasPrefix(s, "```") {
-		return s
+// firstJSONObject extracts the first complete JSON object from free text, so
+// prose or ``` fences around the envelope do not cost a whole job run.
+func firstJSONObject(s string) ([]byte, error) {
+	for start := strings.IndexByte(s, '{'); start >= 0; {
+		var obj json.RawMessage
+		if err := json.NewDecoder(strings.NewReader(s[start:])).Decode(&obj); err == nil {
+			return obj, nil
+		}
+		next := strings.IndexByte(s[start+1:], '{')
+		if next < 0 {
+			break
+		}
+		start += 1 + next
 	}
-	s = strings.TrimPrefix(s, "```")
-	if nl := strings.IndexByte(s, '\n'); nl >= 0 {
-		s = s[nl+1:]
-	}
-	return strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(s), "```"))
+	return nil, fmt.Errorf("claude result contains no JSON object: %s", truncate(s, 200))
 }
 
 func (e Envelope) validate() error {
@@ -118,9 +138,11 @@ func (e Envelope) validate() error {
 	return errors.Join(errs...)
 }
 
+// truncate shortens s to at most n runes.
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	return string(r[:n]) + "…"
 }

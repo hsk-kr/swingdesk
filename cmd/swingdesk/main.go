@@ -109,6 +109,9 @@ func ingestOne(ctx context.Context, out io.Writer, conn *sql.DB, path string, ma
 	for _, s := range res.Skipped {
 		fmt.Fprintf(out, "  skipped %s #%d %s: %s\n", s.Kind, s.Index, s.Symbol, s.Reason)
 	}
+	for _, w := range res.Warnings {
+		fmt.Fprintf(out, "  dropped %s on item #%d %s: %s\n", w.Kind, w.Index, w.Symbol, w.Reason)
+	}
 	return nil
 }
 

@@ -28,8 +28,10 @@ type Options struct {
 type SkipKind string
 
 const (
-	SkipItem SkipKind = "item"
-	SkipBias SkipKind = "bias"
+	SkipItem        SkipKind = "item"
+	SkipBias        SkipKind = "bias"
+	SkipEvent       SkipKind = "event"        // item kept, event dropped
+	SkipPublishedAt SkipKind = "published_at" // item kept, field ignored
 )
 
 // Skip is one item or bias that was not written.
@@ -47,7 +49,8 @@ type Result struct {
 	Updated  int
 	Events   int
 	Biases   int
-	Skipped  []Skip
+	Skipped  []Skip // entries not written
+	Warnings []Skip // items written with a field dropped
 }
 
 // IngestFile parses and ingests path.
@@ -95,6 +98,9 @@ func Ingest(ctx context.Context, conn *sql.DB, env Envelope, opts Options) (Resu
 	for _, s := range res.Skipped {
 		opts.Logger.Warn("ingest skipped", "job", env.Job, "kind", s.Kind, "index", s.Index, "symbol", s.Symbol, "reason", s.Reason)
 	}
+	for _, s := range res.Warnings {
+		opts.Logger.Warn("ingest dropped field", "job", env.Job, "kind", s.Kind, "index", s.Index, "symbol", s.Symbol, "reason", s.Reason)
+	}
 	return res, nil
 }
 
@@ -122,31 +128,47 @@ func ingestItems(ctx context.Context, tx *sql.Tx, env Envelope, known map[string
 			res.Skipped = append(res.Skipped, Skip{Kind: SkipItem, Index: i, Symbol: symbolOf(raw), Reason: err.Error()})
 			continue
 		}
-		outcome, hasEvent, err := writeItem(ctx, tx, raw, known[sym], opts)
+		w, err := writeItem(ctx, tx, raw, known[sym], opts)
 		if err != nil {
 			return Result{}, fmt.Errorf("item %d: %w", i, err)
 		}
-		switch outcome {
-		case db.UpsertInserted:
-			res.Inserted++
-		case db.UpsertUpdated:
-			res.Updated++
-		}
-		if hasEvent {
-			res.Events++
-		}
+		res = res.add(i, symbolOf(raw), w)
 	}
 	return res, nil
 }
 
-// writeItem upserts one validated item and its event (if event_at is set).
-func writeItem(ctx context.Context, tx *sql.Tx, raw RawItem, in model.Instrument, opts Options) (db.UpsertOutcome, bool, error) {
+// written describes what writeItem did for one item.
+type written struct {
+	outcome  db.UpsertOutcome
+	event    bool
+	warnings []Skip // Index/Symbol filled in by Result.add
+}
+
+func (r Result) add(index int, symbol string, w written) Result {
+	switch w.outcome {
+	case db.UpsertInserted:
+		r.Inserted++
+	case db.UpsertUpdated:
+		r.Updated++
+	}
+	if w.event {
+		r.Events++
+	}
+	for _, warn := range w.warnings {
+		warn.Index, warn.Symbol = index, symbol
+		r.Warnings = append(r.Warnings, warn)
+	}
+	return r
+}
+
+// writeItem upserts one validated item and its event (if event_at parses).
+// Unparseable optional timestamps are dropped and reported, not fatal.
+func writeItem(ctx context.Context, tx *sql.Tx, raw RawItem, in model.Instrument, opts Options) (written, error) {
+	var w written
 	published, err := parseWhen(raw.PublishedAt)
 	if err != nil {
-		opts.Logger.Warn("ingest: ignoring published_at", "title", raw.Title, "err", err)
-		published = time.Time{}
+		w.warnings = append(w.warnings, Skip{Kind: SkipPublishedAt, Reason: err.Error()})
 	}
-	eventAt, eventErr := parseWhen(raw.EventAt)
 	it := model.Item{
 		InstrumentID: in.ID,
 		Symbol:       in.Symbol,
@@ -161,28 +183,37 @@ func writeItem(ctx context.Context, tx *sql.Tx, raw RawItem, in model.Instrument
 	}
 	id, outcome, err := db.UpsertItem(ctx, tx, opts.RunID, it)
 	if err != nil {
-		return 0, false, err
+		return written{}, err
 	}
-	if raw.EventAt == nil || eventErr != nil || eventAt.IsZero() {
-		if eventErr != nil {
-			opts.Logger.Warn("ingest: ignoring event_at", "title", raw.Title, "err", eventErr)
-		}
-		return outcome, false, nil
+	w.outcome = outcome
+	eventAt, err := parseWhen(raw.EventAt)
+	switch {
+	case err != nil:
+		w.warnings = append(w.warnings, Skip{Kind: SkipEvent, Reason: err.Error()})
+		return w, nil
+	case eventAt.IsZero():
+		return w, nil
 	}
 	ev := model.Event{InstrumentID: in.ID, ItemID: id, Title: it.Title, At: eventAt, Kind: eventKind(raw.EventKind)}
 	if err := db.UpsertEvent(ctx, tx, ev, opts.Now); err != nil {
-		return 0, false, err
+		return written{}, err
 	}
-	return outcome, true, nil
+	w.event = true
+	return w, nil
 }
 
 func ingestBiases(ctx context.Context, tx *sql.Tx, env Envelope, known map[string]model.Instrument, opts Options, res Result) (Result, error) {
+	seen := map[int64]bool{}
 	for i, raw := range env.Biases {
 		in, err := checkBias(raw, known)
+		if err == nil && seen[in.ID] {
+			err = fmt.Errorf("duplicate bias for %s in this file", in.Symbol)
+		}
 		if err != nil {
 			res.Skipped = append(res.Skipped, Skip{Kind: SkipBias, Index: i, Symbol: raw.Symbol, Reason: err.Error()})
 			continue
 		}
+		seen[in.ID] = true
 		b := model.Bias{
 			InstrumentID: in.ID,
 			Stance:       raw.Stance,

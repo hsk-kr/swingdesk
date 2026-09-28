@@ -19,9 +19,10 @@ const (
 )
 
 // UpsertItem inserts it keyed by DedupeKey(it.Symbol, it.Title, it.URL). On
-// a key match it refreshes summary, body, source and published_at but keeps
-// read_at, created_at and the original run, so a re-reported story neither
-// resurfaces as unread nor jumps the queue.
+// a key match it refreshes summary, body, source and published_at (empty new
+// values never erase stored ones) but keeps read_at, created_at and the
+// original run, so a re-reported story neither resurfaces as unread nor
+// jumps the queue.
 func UpsertItem(ctx context.Context, conn DBTX, runID int64, it model.Item) (int64, UpsertOutcome, error) {
 	if !it.Category.Valid() {
 		return 0, 0, fmt.Errorf("invalid category %q", it.Category)
@@ -35,10 +36,13 @@ func UpsertItem(ctx context.Context, conn DBTX, runID int64, it model.Item) (int
 	case err != nil:
 		return 0, 0, fmt.Errorf("lookup item %q: %w", it.Title, err)
 	}
-	if _, err := conn.ExecContext(ctx, `UPDATE items
-		SET summary = ?, body = ?, source = ?, published_at = COALESCE(?, published_at)
+	if _, err := conn.ExecContext(ctx, `UPDATE items SET
+		summary      = COALESCE(?, summary),
+		body         = COALESCE(?, body),
+		source       = COALESCE(?, source),
+		published_at = COALESCE(?, published_at)
 		WHERE id = ?`,
-		it.Summary, it.Body, nullIfEmpty(it.Source), nullTime(it.PublishedAt), id); err != nil {
+		nullIfEmpty(it.Summary), nullIfEmpty(it.Body), nullIfEmpty(it.Source), nullTime(it.PublishedAt), id); err != nil {
 		return 0, 0, fmt.Errorf("update item %d: %w", id, err)
 	}
 	return id, UpsertUpdated, nil
