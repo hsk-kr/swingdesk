@@ -1,4 +1,6 @@
-package ui
+// Package sample provides placeholder inbox rows so the TUI is usable before
+// the agent pipeline exists (`swingdesk -insert-sample`).
+package sample
 
 import (
 	"time"
@@ -16,8 +18,7 @@ type fixture struct {
 	ageMin   int
 }
 
-// fixtureRows are placeholder inbox items so the chrome is reviewable before
-// the ingest pipeline exists. Removed once the inbox reads from SQLite.
+// fixtureRows are placeholder inbox items. URLs point at example.com.
 var fixtureRows = []fixture{
 	{"NVDA", model.CategoryNews, "Hyperscaler capex guide lifts AI accelerator orders",
 		"Two cloud providers raised FY capex guidance, citing accelerator supply. Near-term read-through is positive for NVDA into next week's supplier conference.",
@@ -51,10 +52,9 @@ var fixtureRows = []fixture{
 		"SpaceNews", "https://example.com/spacex-cadence", 240},
 }
 
-// FixtureItems returns placeholder unread items, newest first, resolved
-// against the given instruments. Items for unknown symbols become general
-// tape items.
-func FixtureItems(instruments []model.Instrument, now time.Time) []model.Item {
+// Items returns placeholder unread items, newest first, resolved against the
+// given instruments. Items for unknown symbols become general tape items.
+func Items(instruments []model.Instrument, now time.Time) []model.Item {
 	bySymbol := make(map[string]model.Instrument, len(instruments))
 	for _, in := range instruments {
 		bySymbol[in.Symbol] = in
@@ -80,8 +80,8 @@ func FixtureItems(instruments []model.Instrument, now time.Time) []model.Item {
 	return out
 }
 
-// FixtureBiases returns placeholder stances for a few instruments.
-func FixtureBiases(instruments []model.Instrument, now time.Time) map[int64]model.Bias {
+// Biases returns placeholder stances for a few instruments.
+func Biases(instruments []model.Instrument, now time.Time) map[int64]model.Bias {
 	calls := map[string]model.Bias{
 		"NVDA":  {Stance: model.StanceLong, Confidence: 0.62, Rationale: "Capex read-through is fresh; supplier conference is a near-term catalyst."},
 		"META":  {Stance: model.StanceNone, Confidence: 0.40, Rationale: "Target cuts are incremental. No clean 3-10 day edge."},

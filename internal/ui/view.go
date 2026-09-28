@@ -96,7 +96,7 @@ func (m Model) detailTitle() string {
 func (m Model) header() string {
 	parts := []part{
 		{styleBrand.Render("swingdesk"), 0},
-		{styleHeader.Render(fmt.Sprintf("unread %d", len(m.items))), 1},
+		{styleHeader.Render(fmt.Sprintf("unread %d", m.counts.Total)), 1},
 		{styleHeader.Render("last refresh " + m.fmtTimeOr(m.status.LastRefresh, "never")), 3},
 		{styleHeader.Render("next refresh " + m.fmtTimeOr(m.status.NextRefresh, "—")), 4},
 		{styleHeader.Render("agents " + m.status.Agents.String()), 2},
@@ -105,9 +105,16 @@ func (m Model) header() string {
 }
 
 func (m Model) footer() string {
+	if m.notice != "" {
+		style := styleNotice
+		if m.noticeErr {
+			style = styleError
+		}
+		return fitWidth(style.Render(" "+m.notice), m.width)
+	}
 	parts := []part{
-		{"j/k move", 1}, {"h/l pane", 2}, {"tab next", 4}, {"enter open", 3},
-		{"g/G top/bottom", 5}, {"? help", 0}, {"q quit", 0},
+		{"j/k move", 2}, {"h/l pane", 3}, {"r read", 1}, {"a all read", 4}, {"u undo", 4},
+		{"enter open", 5}, {"g/G top/bottom", 6}, {"? help", 0}, {"q quit", 0},
 	}
 	return fitWidth(styleMuted.Render(" "+joinFitting(parts, " · ", m.width-1)), m.width)
 }
@@ -154,7 +161,7 @@ func (m Model) filterLines(w, h int) []string {
 	out := make([]string, 0, end-start)
 	for i := start; i < end; i++ {
 		f := m.filters[i]
-		n := countMatches(m.items, f)
+		n := m.counts.Count(f.Query)
 		badge := ""
 		if n > 0 {
 			badge = fmt.Sprintf("%d", n)
@@ -175,6 +182,9 @@ func (m Model) filterLines(w, h int) []string {
 }
 
 func (m Model) inboxLines(w, h int) []string {
+	if !m.loaded && len(m.visible) == 0 {
+		return []string{styleMuted.Render(" loading…")}
+	}
 	if len(m.visible) == 0 {
 		return []string{styleMuted.Render(" no unread items")}
 	}
@@ -279,6 +289,9 @@ func (m Model) helpLines() []string {
 		" enter      open detail",
 		" esc        back",
 		" g / G      top / bottom",
+		" r          mark selected read",
+		" a          mark all visible read",
+		" u          undo last mark read",
 		" ? / esc    close help (j/k scroll)",
 		" q          quit",
 		"",

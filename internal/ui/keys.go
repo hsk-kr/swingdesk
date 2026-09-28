@@ -7,6 +7,8 @@ type keyMap struct {
 	NextPane, PrevPane    key.Binding
 	Enter, Back           key.Binding
 	Top, Bottom           key.Binding
+	MarkRead, MarkAll     key.Binding
+	Undo                  key.Binding
 	Help, Quit            key.Binding
 }
 
@@ -22,6 +24,9 @@ func defaultKeys() keyMap {
 		Back:     key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
 		Top:      key.NewBinding(key.WithKeys("g", "home"), key.WithHelp("g", "top")),
 		Bottom:   key.NewBinding(key.WithKeys("G", "end"), key.WithHelp("G", "bottom")),
+		MarkRead: key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "mark read")),
+		MarkAll:  key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "mark all visible read")),
+		Undo:     key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "undo mark read")),
 		Help:     key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		Quit:     key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
 	}

@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/hsk-kr/swingdesk/internal/model"
+	"github.com/hsk-kr/swingdesk/internal/sample"
 )
 
 var testNow = time.Date(2026, 9, 27, 11, 41, 0, 0, time.UTC)
@@ -24,22 +25,31 @@ func testInstruments() []model.Instrument {
 
 func newTestModel(t *testing.T, w, h int) Model {
 	t.Helper()
-	ins := testInstruments()
-	m := New(Options{
-		Instruments: ins,
-		Items:       FixtureItems(ins, testNow),
-		Biases:      FixtureBiases(ins, testNow),
-		Location:    time.UTC,
-	})
-	next, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
-	return next.(Model)
+	m, _ := newTestModelStore(t, w, h)
+	return m
 }
 
+func newTestModelStore(t *testing.T, w, h int) (Model, fakeStore) {
+	t.Helper()
+	ins := testInstruments()
+	store := newFakeStore(sample.Items(ins, testNow), sample.Biases(ins, testNow))
+	return newModelWith(t, store, ins, w, h), store
+}
+
+func newModelWith(t *testing.T, store fakeStore, ins []model.Instrument, w, h int) Model {
+	t.Helper()
+	m := New(Options{Store: store, Instruments: ins, Location: time.UTC, Now: func() time.Time { return testNow }})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
+	m = next.(Model)
+	return drive(m, m.Init())
+}
+
+// press sends keys and runs the resulting commands to completion.
 func press(t *testing.T, m Model, keys ...string) Model {
 	t.Helper()
 	for _, k := range keys {
-		next, _ := m.Update(keyMsg(k))
-		m = next.(Model)
+		next, cmd := m.Update(keyMsg(k))
+		m = drive(next.(Model), cmd)
 	}
 	return m
 }
@@ -66,7 +76,7 @@ func keyMsg(k string) tea.KeyPressMsg {
 func plain(m Model) string { return ansi.Strip(m.render()) }
 
 func TestFixturesResolveInstruments(t *testing.T) {
-	items := FixtureItems(testInstruments(), testNow)
+	items := sample.Items(testInstruments(), testNow)
 	if len(items) < 8 || len(items) > 10 {
 		t.Fatalf("fixture count = %d, want 8-10", len(items))
 	}
@@ -123,7 +133,7 @@ func TestRenderLayout(t *testing.T) {
 }
 
 func TestTooSmallAndLoading(t *testing.T) {
-	m := New(Options{Instruments: testInstruments()})
+	m := New(Options{Store: newFakeStore(nil, nil), Instruments: testInstruments()})
 	if plain(m) != "loading…" {
 		t.Errorf("before size: %q", plain(m))
 	}
@@ -222,10 +232,8 @@ func TestFilterPane(t *testing.T) {
 }
 
 func TestEmptyFilterShowsEmptyState(t *testing.T) {
-	ins := testInstruments()
-	m := New(Options{Instruments: ins, Location: time.UTC})
-	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	out := plain(next.(Model))
+	m := newModelWith(t, newFakeStore(nil, nil), testInstruments(), 100, 30)
+	out := plain(m)
 	if !strings.Contains(out, "no unread items") || !strings.Contains(out, "nothing selected") {
 		t.Error("expected empty states")
 	}
@@ -326,9 +334,7 @@ func TestWideCharactersFit(t *testing.T) {
 		URL:     "https://example.com/" + strings.Repeat("very-long-path-segment-", 12),
 	}}
 	for _, sz := range [][2]int{{60, 14}, {87, 20}, {120, 40}} {
-		m := New(Options{Instruments: ins, Items: items, Location: time.UTC})
-		next, _ := m.Update(tea.WindowSizeMsg{Width: sz[0], Height: sz[1]})
-		assertFrame(t, next.(Model), sz[0], sz[1])
+		assertFrame(t, newModelWith(t, newFakeStore(items, nil), ins, sz[0], sz[1]), sz[0], sz[1])
 	}
 }
 
@@ -383,6 +389,7 @@ func TestNarrowHeaderKeepsAgentsAndFooterKeepsHelpQuit(t *testing.T) {
 
 func TestHeaderShowsAgentStatus(t *testing.T) {
 	m := New(Options{
+		Store:       newFakeStore(nil, nil),
 		Instruments: testInstruments(),
 		Location:    time.UTC,
 		Status: Status{
