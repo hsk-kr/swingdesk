@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/hsk-kr/swingdesk/internal/model"
 	"github.com/hsk-kr/swingdesk/internal/refresh"
@@ -24,13 +25,13 @@ type refreshSpy struct {
 	onRun func()
 }
 
-func (s refreshSpy) fn(progress func(model.Job, error)) refresh.Outcome {
+func (s refreshSpy) fn(progress func(model.Job)) refresh.Outcome {
 	*s.calls++
 	if s.onRun != nil {
 		s.onRun()
 	}
 	for _, j := range s.out.Jobs {
-		progress(j.Job, j.Err)
+		progress(j.Job)
 	}
 	return s.out
 }
@@ -171,9 +172,9 @@ func TestJobProgressShrinksRunningList(t *testing.T) {
 }
 
 func TestRunRefreshStreamsProgressThenDone(t *testing.T) {
-	fn := func(progress func(model.Job, error)) refresh.Outcome {
-		progress(model.JobMarket, nil)
-		progress(model.JobNames, errors.New("x"))
+	fn := func(progress func(model.Job)) refresh.Outcome {
+		progress(model.JobMarket)
+		progress(model.JobNames)
 		return refresh.Outcome{Status: model.RunPartial}
 	}
 	msg := runRefresh(fn)()
@@ -236,5 +237,57 @@ func TestHelpMentionsTmuxAttach(t *testing.T) {
 	m = press(t, next.(Model), "?")
 	if !strings.Contains(plain(m), "tmux attach -t desk2") {
 		t.Error("help should mention tmux attach with the session name")
+	}
+}
+
+func TestNarrowHeaderDropsLastThenNextKeepsAgentsAndFlash(t *testing.T) {
+	m := New(Options{Store: newFakeStore(nil, nil), Instruments: testInstruments(), Location: time.UTC,
+		Now: func() time.Time { return testNow }})
+	m.status = Status{LastRefresh: testNow, NextRefresh: testNow.Add(30 * time.Minute),
+		Agents: model.AgentStatus{State: model.AgentError, Err: `exec: "tmux": executable file not found in $PATH`}}
+	m.flashN, m.flashUntil = 3, testNow.Add(time.Minute)
+	for _, c := range []struct {
+		width     int
+		want, not []string
+	}{
+		{140, []string{"+3 new", "last refresh", "next 12:11", "agents error"}, nil},
+		{100, []string{"+3 new", "next 12:11", "agents error"}, []string{"last refresh"}},
+		{75, []string{"+3 new", "agents error", "unread 0"}, []string{"last refresh", "next"}},
+	} {
+		next, _ := m.Update(tea.WindowSizeMsg{Width: c.width, Height: 20})
+		head := strings.Split(plain(next.(Model)), "\n")[0]
+		for _, w := range c.want {
+			if !strings.Contains(head, w) {
+				t.Errorf("width %d: missing %q in %q", c.width, w, head)
+			}
+		}
+		for _, n := range c.not {
+			if strings.Contains(head, n) {
+				t.Errorf("width %d: %q should be dropped: %q", c.width, n, head)
+			}
+		}
+		if strings.Contains(head, "$PATH") {
+			t.Errorf("width %d: long agent error should be truncated: %q", c.width, head)
+		}
+	}
+}
+
+func TestHelpLayoutKeysBeforeTmuxSection(t *testing.T) {
+	lines := New(Options{Store: newFakeStore(nil, nil)}).helpLines()
+	joined := ansi.Strip(strings.Join(lines, "\n"))
+	quit := strings.Index(joined, "q          quit")
+	watch := strings.Index(joined, "Watch the agents")
+	if quit < 0 || watch < 0 || quit > watch {
+		t.Errorf("keys must precede the tmux section:\n%s", joined)
+	}
+}
+
+func TestBiasAsOfIncludesDate(t *testing.T) {
+	ins := testInstruments()
+	items := []model.Item{{ID: 1, InstrumentID: 1, Symbol: "NVDA", Category: model.CategoryNews, Title: "t", URL: "https://x", CreatedAt: testNow}}
+	biases := map[int64]model.Bias{1: {InstrumentID: 1, Stance: model.StanceLong, Confidence: 0.5, CreatedAt: testNow.Add(-72 * time.Hour)}}
+	m := newModelWith(t, newFakeStore(items, biases), ins, 120, 30)
+	if !strings.Contains(plain(m), "as of 24 Sep 11:41") {
+		t.Errorf("detail should date the stance:\n%s", plain(m))
 	}
 }

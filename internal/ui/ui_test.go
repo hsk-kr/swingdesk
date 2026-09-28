@@ -362,7 +362,7 @@ func TestHelpScrollsIndependently(t *testing.T) {
 		t.Fatal("help should overflow at 60x14")
 	}
 	m = press(t, m, "G")
-	if !strings.Contains(plain(m), "q          quit") {
+	if !strings.Contains(plain(m), "Full keybinding list") {
 		t.Error("G should reveal the end of help")
 	}
 	m = press(t, m, "g")

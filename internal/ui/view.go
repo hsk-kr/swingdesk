@@ -132,8 +132,11 @@ func fmtCountdown(d time.Duration) string {
 	return fmt.Sprintf("%d:%02d", mm, ss)
 }
 
+// maxAgentsWidth caps the header's agent text; full errors go to the footer.
+const maxAgentsWidth = 40
+
 func (m Model) agentsText() string {
-	text := "agents " + m.status.Agents.String()
+	text := ansi.Truncate("agents "+m.status.Agents.String(), maxAgentsWidth, "…")
 	switch m.status.Agents.State {
 	case model.AgentRunning:
 		return styleFlash.Render(text)
@@ -187,6 +190,14 @@ func joinFitting(parts []part, sep string, width int) string {
 		}
 		keep = slices.Delete(keep, worst, worst+1)
 	}
+}
+
+// fmtDateTimeOr includes the date so stale data never reads as today.
+func (m Model) fmtDateTimeOr(t time.Time, fallback string) string {
+	if t.IsZero() {
+		return fallback
+	}
+	return t.In(m.loc).Format(timeLayout)
 }
 
 func (m Model) fmtTimeOr(t time.Time, fallback string) string {
@@ -307,7 +318,7 @@ func (m Model) biasLines(it model.Item, w int) []string {
 		fmt.Sprintf(" %s %s  %s",
 			styleMuted.Render(sym+" stance:"),
 			stanceStyle(b.Stance).Render(string(b.Stance)),
-			styleMuted.Render(fmt.Sprintf("conf %.2f · as of %s", b.Confidence, m.fmtTimeOr(b.CreatedAt, "—")))),
+			styleMuted.Render(fmt.Sprintf("conf %.2f · as of %s", b.Confidence, m.fmtDateTimeOr(b.CreatedAt, "—")))),
 	}
 	for _, l := range wrap(b.Rationale, w-2) {
 		if l != "" {
@@ -336,12 +347,12 @@ func (m Model) helpLines() []string {
 		" a          mark all visible read",
 		" u          undo last mark read",
 		" R          refresh now (resets the timer)",
+		" ? / esc    close help (j/k scroll)",
+		" q          quit",
 		"",
 		" " + styleHeading.Render("Watch the agents"),
 		" tmux attach -t " + m.sessionName(),
 		" " + styleMuted.Render("one window per job: market, tech, names"),
-		" ? / esc    close help (j/k scroll)",
-		" q          quit",
 		"",
 		" " + styleMuted.Render("Full keybinding list lands with the polish pass."),
 	}

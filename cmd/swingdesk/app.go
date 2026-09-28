@@ -116,8 +116,8 @@ func (a *app) runUI(start startUI) error {
 		Interval:    a.cfg.RefreshInterval(),
 		TmuxSession: a.cfg.TmuxSession,
 		Status:      status,
-		Refresh: func(progress func(model.Job, error)) refresh.Outcome {
-			return r.Refresh(ctx, func(res agent.Result) { progress(res.Job, res.Err) })
+		Refresh: func(progress func(model.Job)) refresh.Outcome {
+			return r.Refresh(ctx, func(res agent.Result) { progress(res.Job) })
 		},
 	}))
 }

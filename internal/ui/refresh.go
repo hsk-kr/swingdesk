@@ -13,8 +13,8 @@ import (
 
 // RefreshFunc performs one blocking refresh, calling progress (from any
 // goroutine) as each agent job finishes. main binds it to the app context so
-// quitting cancels it.
-type RefreshFunc func(progress func(model.Job, error)) refresh.Outcome
+// quitting cancels it. Per-job failures arrive in the final Outcome.
+type RefreshFunc func(progress func(model.Job)) refresh.Outcome
 
 // flashFor is how long the "+N new" header notice stays up.
 const flashFor = 10 * time.Second
@@ -25,7 +25,6 @@ type tickMsg time.Time
 // jobDoneMsg reports one finished agent job; ch streams the rest.
 type jobDoneMsg struct {
 	job model.Job
-	err error
 	ch  <-chan tea.Msg
 }
 
@@ -44,7 +43,7 @@ func runRefresh(fn RefreshFunc) tea.Cmd {
 		ch := make(chan tea.Msg, len(model.Jobs())*2+1)
 		go func() {
 			defer close(ch)
-			out := fn(func(j model.Job, err error) { ch <- jobDoneMsg{job: j, err: err, ch: ch} })
+			out := fn(func(j model.Job) { ch <- jobDoneMsg{job: j, ch: ch} })
 			ch <- refreshDoneMsg{out: out}
 		}()
 		return <-ch
