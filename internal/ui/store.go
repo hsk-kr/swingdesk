@@ -34,10 +34,14 @@ type loadedMsg struct {
 }
 
 // markedMsg reports a mark-read (undo=false) or mark-unread (undo=true).
+// batch is the keypress sequence number; requested is what was asked for,
+// ids what actually changed.
 type markedMsg struct {
-	ids  []int64
-	undo bool
-	err  error
+	batch     int
+	requested []int64
+	ids       []int64
+	undo      bool
+	err       error
 }
 
 func loadCmd(s Store, seq int, f model.ItemFilter) tea.Cmd {
@@ -56,22 +60,22 @@ func loadCmd(s Store, seq int, f model.ItemFilter) tea.Cmd {
 	}
 }
 
-func markReadCmd(s Store, ids []int64, now func() time.Time) tea.Cmd {
+func markReadCmd(s Store, batch int, ids []int64, now func() time.Time) tea.Cmd {
 	ids = slices.Clone(ids)
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
 		defer cancel()
 		changed, err := s.MarkRead(ctx, ids, now())
-		return markedMsg{ids: changed, err: err}
+		return markedMsg{batch: batch, requested: ids, ids: changed, err: err}
 	}
 }
 
-func markUnreadCmd(s Store, ids []int64) tea.Cmd {
+func markUnreadCmd(s Store, batch int, ids []int64) tea.Cmd {
 	ids = slices.Clone(ids)
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
 		defer cancel()
 		changed, err := s.MarkUnread(ctx, ids)
-		return markedMsg{ids: changed, undo: true, err: err}
+		return markedMsg{batch: batch, requested: ids, ids: changed, undo: true, err: err}
 	}
 }

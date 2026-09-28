@@ -42,4 +42,8 @@ func TestInsertIsIdempotentForItems(t *testing.T) {
 	if err != nil || len(biases) != 3 {
 		t.Errorf("biases = %d, %v", len(biases), err)
 	}
+	var rows int
+	if err := conn.QueryRow(`SELECT COUNT(*) FROM biases`).Scan(&rows); err != nil || rows != 3 {
+		t.Errorf("bias rows = %d, %v; re-running must not duplicate", rows, err)
+	}
 }

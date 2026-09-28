@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/hsk-kr/swingdesk/internal/model"
 )
 
@@ -173,5 +175,90 @@ func TestDecrementCountsDoesNotMutateInput(t *testing.T) {
 	}
 	if out.Total != 1 || out.ByCategory[model.CategoryNews] != 1 || out.ByInstrument[1] != 1 {
 		t.Errorf("out = %+v", out)
+	}
+}
+
+func run1(t *testing.T, m Model, cmd tea.Cmd) (Model, tea.Cmd) {
+	t.Helper()
+	next, nc := m.Update(cmd())
+	return next.(Model), nc
+}
+
+func TestOverlappingMarksNeverResurrectRows(t *testing.T) {
+	m, store := newTestModelStore(t, 120, 40)
+	next, c1 := m.Update(keyMsg("r"))            // id 1
+	next, c2 := next.(Model).Update(keyMsg("r")) // id 2
+	m = next.(Model)
+
+	// mark(1) finishes while mark(2) is still in flight: no reload yet.
+	m, reload := run1(t, m, c1)
+	if reload != nil {
+		t.Fatal("must not reload while another mark is in flight")
+	}
+	// A snapshot taken now (before mark(2) commits) still contains id 2.
+	stale, _ := store.Unread(t.Context(), m.currentFilter())
+	counts, _ := store.Counts(t.Context())
+	next, _ = m.Update(loadedMsg{seq: m.loadSeq, filter: m.currentFilter(), items: stale, counts: counts})
+	m = next.(Model)
+	if slices.Contains(visibleIDs(m), 2) || m.counts.Total != 8 {
+		t.Fatalf("ghost row: visible=%v total=%d", visibleIDs(m), m.counts.Total)
+	}
+
+	m = drive(m, c2)
+	if slices.Contains(visibleIDs(m), 1) || slices.Contains(visibleIDs(m), 2) || m.counts.Total != 8 {
+		t.Errorf("after both marks: visible=%v total=%d", visibleIDs(m), m.counts.Total)
+	}
+}
+
+func TestUndoFollowsKeypressOrderWhenMarksFinishOutOfOrder(t *testing.T) {
+	m, store := newTestModelStore(t, 120, 40)
+	next, c1 := m.Update(keyMsg("r"))            // id 1, batch 1
+	next, c2 := next.(Model).Update(keyMsg("r")) // id 2, batch 2
+	m = drive(drive(next.(Model), c2), c1)       // finish 2 before 1
+	m = press(t, m, "u")
+	if !slices.Equal(store.readIDs(), []int64{1}) {
+		t.Errorf("undo should restore the last key press (id 2); read = %v", store.readIDs())
+	}
+}
+
+func TestFailedUndoKeepsBatch(t *testing.T) {
+	m, store := newTestModelStore(t, 120, 40)
+	m = press(t, m, "r")
+	store.s.failNext = errBoom
+	m = press(t, m, "u")
+	if !strings.Contains(plain(m), "undo: boom") {
+		t.Error("expected undo error notice")
+	}
+	m = press(t, m, "u")
+	if len(store.readIDs()) != 0 {
+		t.Errorf("retrying undo should restore; read = %v", store.readIDs())
+	}
+}
+
+func TestLoadErrorAfterFilterChangeIsNotStuckLoading(t *testing.T) {
+	m, store := newTestModelStore(t, 120, 40)
+	m = press(t, m, "h")
+	store.s.failNext = errBoom
+	m = press(t, m, "j", "l")
+	out := plain(m)
+	if strings.Contains(out, "loading…") || !strings.Contains(out, "failed to load: boom") {
+		t.Errorf("inbox should show the load error, got:\n%s", out)
+	}
+	m = press(t, m, "h", "k")
+	if len(m.visible) != 10 || strings.Contains(plain(m), "failed to load") {
+		t.Error("changing filter should retry")
+	}
+}
+
+func TestFilterChangeDuringMarkReloadsAfterMark(t *testing.T) {
+	m, _ := newTestModelStore(t, 120, 40)
+	next, c1 := m.Update(keyMsg("r"))
+	m = press(t, next.(Model), "h", "j", "j") // Market while mark in flight
+	if m.loaded {
+		t.Fatal("filter change during a mark should wait")
+	}
+	m = drive(m, c1)
+	if !m.loaded || len(m.visible) != 3 {
+		t.Errorf("market after mark: loaded=%v visible=%d", m.loaded, len(m.visible))
 	}
 }

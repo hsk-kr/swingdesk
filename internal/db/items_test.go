@@ -180,3 +180,18 @@ func TestLatestBiases(t *testing.T) {
 		t.Errorf("latest = %+v", got)
 	}
 }
+
+func TestUnreadTiesOrderByIDDesc(t *testing.T) {
+	conn, _ := seededDB(t)
+	a := insert(t, conn, model.Item{Category: model.CategoryNews, Title: "first", CreatedAt: t0})
+	b := insert(t, conn, model.Item{Category: model.CategoryNews, Title: "second", CreatedAt: t0})
+	c := insert(t, conn, model.Item{Category: model.CategoryNews, Title: "subsec", CreatedAt: t0.Add(time.Nanosecond)})
+	got, err := UnreadItems(context.Background(), conn, model.ItemFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := []int64{got[0].ID, got[1].ID, got[2].ID}
+	if !slices.Equal(ids, []int64{c, b, a}) {
+		t.Errorf("order = %v, want %v", ids, []int64{c, b, a})
+	}
+}

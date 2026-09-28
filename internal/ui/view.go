@@ -185,6 +185,9 @@ func (m Model) inboxLines(w, h int) []string {
 	if !m.loaded && len(m.visible) == 0 {
 		return []string{styleMuted.Render(" loading…")}
 	}
+	if m.loadErr != "" && len(m.visible) == 0 {
+		return []string{styleError.Render(" failed to load: " + m.loadErr), styleMuted.Render(" change filter to retry")}
+	}
 	if len(m.visible) == 0 {
 		return []string{styleMuted.Render(" no unread items")}
 	}

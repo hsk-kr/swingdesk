@@ -6,7 +6,8 @@ import (
 )
 
 // timeLayout is fixed-width UTC so TEXT columns sort chronologically.
-// (RFC3339Nano trims trailing zeros, which breaks lexical ordering.)
+// (RFC3339Nano trims trailing zeros, which breaks lexical ordering.) Every
+// timestamp written to the DB must go through formatTime.
 const timeLayout = "2006-01-02T15:04:05.000000000Z"
 
 func formatTime(t time.Time) string { return t.UTC().Format(timeLayout) }

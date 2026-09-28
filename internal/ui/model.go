@@ -54,8 +54,11 @@ type Model struct {
 	counts       model.UnreadCounts
 	biases       map[int64]model.Bias
 	loaded       bool
+	loadErr      string
 	loadSeq      int
-	undo         [][]int64 // mark-read batches, most recent last
+	undo         []undoBatch // mark-read batches ordered by keypress, most recent last
+	batchSeq     int         // keypress sequence for mark/undo commands
+	inFlight     int         // mark/unmark commands not yet answered
 
 	itemCursor   int
 	detailScroll int
@@ -93,6 +96,12 @@ func New(opts Options) Model {
 		biases:      map[int64]model.Bias{},
 		focus:       paneInbox,
 	}
+}
+
+// undoBatch is one mark-read keypress that can be undone.
+type undoBatch struct {
+	seq int
+	ids []int64
 }
 
 // Init implements tea.Model.
@@ -135,18 +144,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // applyLoaded installs a snapshot, keeping the selected item if it is still
 // present and otherwise keeping the cursor row (so the next item slides in).
+// Snapshots that may predate an in-flight mark are dropped; the reload issued
+// when the last mark answers replaces them.
 func (m Model) applyLoaded(msg loadedMsg) Model {
-	if msg.seq != m.loadSeq || msg.filter != m.currentFilter() {
+	if msg.seq != m.loadSeq || msg.filter != m.currentFilter() || m.inFlight > 0 {
 		return m
 	}
+	m.loaded = true
 	if msg.err != nil {
+		m.loadErr = msg.err.Error()
 		return m.withError("load inbox", msg.err)
 	}
+	m.loadErr = ""
 	prev, hadPrev := m.Selected()
 	m.visible = msg.items
 	m.counts = msg.counts
 	m.biases = msg.biases
-	m.loaded = true
 	if hadPrev {
 		if i := slices.IndexFunc(m.visible, func(it model.Item) bool { return it.ID == prev.ID }); i >= 0 {
 			m.itemCursor = i
@@ -158,19 +171,35 @@ func (m Model) applyLoaded(msg loadedMsg) Model {
 	return m
 }
 
+// applyMarked records the result of a mark/unmark and reloads once no other
+// mark is in flight, so a reload can never observe a half-applied set.
 func (m Model) applyMarked(msg markedMsg) (tea.Model, tea.Cmd) {
-	if msg.err != nil {
-		m = m.withError("update read state", msg.err)
-		return m.reload()
-	}
+	m.inFlight = max(m.inFlight-1, 0)
 	switch {
+	case msg.err != nil && msg.undo:
+		m.undo = pushUndo(m.undo, undoBatch{seq: msg.batch, ids: msg.requested})
+		m = m.withError("undo", msg.err)
+	case msg.err != nil:
+		m = m.withError("update read state", msg.err)
 	case msg.undo:
 		m.notice = fmt.Sprintf("restored %d", len(msg.ids))
 	case len(msg.ids) > 0:
-		m.undo = append(slices.Clip(m.undo), msg.ids)
+		m.undo = pushUndo(m.undo, undoBatch{seq: msg.batch, ids: msg.ids})
 		m.notice = fmt.Sprintf("marked %d read · u undo", len(msg.ids))
 	}
+	if m.inFlight > 0 {
+		return m, nil
+	}
 	return m.reload()
+}
+
+// pushUndo returns a new stack with b inserted in keypress order.
+func pushUndo(stack []undoBatch, b undoBatch) []undoBatch {
+	i := len(stack)
+	for i > 0 && stack[i-1].seq > b.seq {
+		i--
+	}
+	return slices.Insert(slices.Clone(stack), i, b)
 }
 
 func (m Model) withError(action string, err error) Model {
@@ -244,7 +273,7 @@ func (m Model) markSelectedRead() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m = m.removeLocally([]model.Item{it})
-	return m, markReadCmd(m.store, []int64{it.ID}, m.now)
+	return m.startMark(func(batch int) tea.Cmd { return markReadCmd(m.store, batch, []int64{it.ID}, m.now) })
 }
 
 // markVisibleRead marks every row under the current filter read.
@@ -258,7 +287,16 @@ func (m Model) markVisibleRead() (tea.Model, tea.Cmd) {
 		ids[i] = it.ID
 	}
 	m = m.removeLocally(gone)
-	return m, markReadCmd(m.store, ids, m.now)
+	return m.startMark(func(batch int) tea.Cmd { return markReadCmd(m.store, batch, ids, m.now) })
+}
+
+// startMark allocates a keypress sequence number and counts the command as
+// in flight.
+func (m Model) startMark(cmd func(batch int) tea.Cmd) (Model, tea.Cmd) {
+	m.batchSeq++
+	m.inFlight++
+	m.loadSeq++
+	return m, cmd(m.batchSeq)
 }
 
 // undoLast restores the most recent mark-read batch of this session.
@@ -269,13 +307,12 @@ func (m Model) undoLast() (tea.Model, tea.Cmd) {
 	}
 	last := m.undo[len(m.undo)-1]
 	m.undo = m.undo[: len(m.undo)-1 : len(m.undo)-1]
-	m.loadSeq++
-	return m, markUnreadCmd(m.store, last)
+	return m.startMark(func(int) tea.Cmd { return markUnreadCmd(m.store, last.seq, last.ids) })
 }
 
 // removeLocally hides items and decrements badges before the store confirms,
-// so rapid keypresses act on the row the user sees. Any in-flight load is
-// invalidated; the post-mark reload reconciles with the DB.
+// so rapid keypresses act on the row the user sees. The reload after the
+// last in-flight mark reconciles with the DB.
 func (m Model) removeLocally(gone []model.Item) Model {
 	drop := make(map[int64]bool, len(gone))
 	for _, it := range gone {
@@ -285,7 +322,6 @@ func (m Model) removeLocally(gone []model.Item) Model {
 	m.counts = decrementCounts(m.counts, gone)
 	m.itemCursor = clamp(m.itemCursor, 0, len(m.visible)-1)
 	m.detailScroll = 0
-	m.loadSeq++
 	return m
 }
 
@@ -325,6 +361,10 @@ func (m Model) move(delta int) (Model, tea.Cmd) {
 		m.detailScroll = 0
 		m.visible = nil
 		m.loaded = false
+		m.loadErr = ""
+		if m.inFlight > 0 {
+			return m, nil // applyMarked reloads for the new filter
+		}
 		return m.reload()
 	case paneInbox:
 		next := clamp(m.itemCursor+delta, 0, len(m.visible)-1)

@@ -25,6 +25,9 @@ func Insert(ctx context.Context, conn *sql.DB, now time.Time) (int, error) {
 			added++
 		}
 	}
+	if added == 0 {
+		return 0, nil // already inserted; do not pile up bias history
+	}
 	for _, b := range Biases(instruments, now) {
 		if err := db.InsertBias(ctx, conn, 0, b); err != nil {
 			return added, err
