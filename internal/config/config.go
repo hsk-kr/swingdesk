@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"time"
 
@@ -18,8 +19,10 @@ import (
 // PermissionMode is a Claude Code --permission-mode value.
 type PermissionMode string
 
+// Values match `claude --help` (Claude Code 2.1).
 const (
-	PermissionDefault     PermissionMode = "default"
+	PermissionManual      PermissionMode = "manual"
+	PermissionAuto        PermissionMode = "auto"
 	PermissionAcceptEdits PermissionMode = "acceptEdits"
 	PermissionPlan        PermissionMode = "plan"
 	PermissionDontAsk     PermissionMode = "dontAsk"
@@ -28,13 +31,19 @@ const (
 // permissionModes is the closed set of accepted permission modes.
 // bypassPermissions is deliberately absent: use ClaudeSkipPermissions to opt in.
 var permissionModes = [...]PermissionMode{
-	PermissionDefault, PermissionAcceptEdits, PermissionPlan, PermissionDontAsk,
+	PermissionManual, PermissionAuto, PermissionAcceptEdits, PermissionPlan, PermissionDontAsk,
 }
 
 // Valid reports whether m is an accepted permission mode.
 func (m PermissionMode) Valid() bool {
 	return slices.Contains(permissionModes[:], m)
 }
+
+// MaxItemsCap is the agent contract's per-file item cap (prompts/schema.json).
+const MaxItemsCap = 40
+
+// sessionName excludes '.' and ':' which tmux treats as target separators.
+var sessionName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // Config is the user-facing configuration file shape.
 type Config struct {
@@ -45,6 +54,8 @@ type Config struct {
 	ClaudeModel           string         `yaml:"claude_model"`
 	ClaudePermissionMode  PermissionMode `yaml:"claude_permission_mode"`
 	ClaudeSkipPermissions bool           `yaml:"claude_dangerously_skip_permissions"`
+	ClaudeMaxBudgetUSD    float64        `yaml:"claude_max_budget_usd"`
+	JobTimeoutMinutes     int            `yaml:"job_timeout_minutes"`
 	MaxItemsPerJob        int            `yaml:"max_items_per_job"`
 	DataDir               string         `yaml:"data_dir"`
 }
@@ -58,6 +69,7 @@ func Defaults() Config {
 		ClaudeBin:            "claude",
 		ClaudeModel:          "",
 		ClaudePermissionMode: PermissionDontAsk,
+		JobTimeoutMinutes:    8,
 		MaxItemsPerJob:       40,
 		DataDir:              "",
 	}
@@ -112,8 +124,8 @@ func (c Config) Validate() error {
 	if _, err := time.LoadLocation(c.Timezone); err != nil || c.Timezone == "" || c.Timezone == "Local" {
 		errs = append(errs, fmt.Errorf("timezone %q is not a valid IANA zone", c.Timezone))
 	}
-	if c.TmuxSession == "" {
-		errs = append(errs, errors.New("tmux_session must not be empty"))
+	if !sessionName.MatchString(c.TmuxSession) {
+		errs = append(errs, fmt.Errorf("tmux_session %q must be non-empty letters, digits, _ or -", c.TmuxSession))
 	}
 	if c.ClaudeBin == "" {
 		errs = append(errs, errors.New("claude_bin must not be empty"))
@@ -121,8 +133,14 @@ func (c Config) Validate() error {
 	if !c.ClaudePermissionMode.Valid() {
 		errs = append(errs, fmt.Errorf("claude_permission_mode %q must be one of %v", c.ClaudePermissionMode, permissionModes))
 	}
-	if c.MaxItemsPerJob < 1 {
-		errs = append(errs, fmt.Errorf("max_items_per_job must be >= 1, got %d", c.MaxItemsPerJob))
+	if c.JobTimeoutMinutes < 1 {
+		errs = append(errs, fmt.Errorf("job_timeout_minutes must be >= 1, got %d", c.JobTimeoutMinutes))
+	}
+	if c.ClaudeMaxBudgetUSD < 0 {
+		errs = append(errs, fmt.Errorf("claude_max_budget_usd must be >= 0, got %v", c.ClaudeMaxBudgetUSD))
+	}
+	if c.MaxItemsPerJob < 1 || c.MaxItemsPerJob > MaxItemsCap {
+		errs = append(errs, fmt.Errorf("max_items_per_job must be 1..%d (the agent contract cap), got %d", MaxItemsCap, c.MaxItemsPerJob))
 	}
 	if c.DataDir != "" && !filepath.IsAbs(c.DataDir) && !isHomeRelative(c.DataDir) {
 		errs = append(errs, fmt.Errorf("data_dir %q must be absolute or start with ~/", c.DataDir))
@@ -133,6 +151,11 @@ func (c Config) Validate() error {
 // RefreshInterval is RefreshMinutes as a duration.
 func (c Config) RefreshInterval() time.Duration {
 	return time.Duration(c.RefreshMinutes) * time.Minute
+}
+
+// JobTimeout is JobTimeoutMinutes as a duration.
+func (c Config) JobTimeout() time.Duration {
+	return time.Duration(c.JobTimeoutMinutes) * time.Minute
 }
 
 // Location returns the configured timezone.

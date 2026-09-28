@@ -5,7 +5,9 @@ timezone: Europe/London
 tmux_session: swingdesk
 claude_bin: claude
 claude_model: ""                  # empty = Claude Code CLI default
-claude_permission_mode: dontAsk   # default | acceptEdits | plan | dontAsk
+claude_permission_mode: dontAsk   # manual | auto | acceptEdits | plan | dontAsk
 claude_dangerously_skip_permissions: false  # explicit opt-in only
+claude_max_budget_usd: 0          # per job; 0 = no --max-budget-usd cap
+job_timeout_minutes: 8            # a job past this is killed and marked failed
 max_items_per_job: 40
 data_dir: ""                      # empty = $XDG_DATA_HOME/swingdesk or ~/.local/share/swingdesk

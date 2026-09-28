@@ -115,7 +115,8 @@ claude -p "$(cat prompts/names.md)" \
 Notes:
 
 - Default model: do not pass `--model` unless config overrides it.
-- Tools limited to web search/fetch so the agent researches instead of editing the repo.
+- Tools limited to web search/fetch so the agent researches instead of editing the repo (`--tools` + `--allowedTools`).
+- Jobs run with `--safe-mode --strict-mcp-config --no-session-persistence`: no user CLAUDE.md, plugins, hooks or MCP servers leak into research runs.
 - `dontAsk` avoids a stuck pane waiting for a human. If the local Claude Code build rejects that mode, fall back to a project `settings.json` allow-list for WebSearch/WebFetch only.
 - `--dangerously-skip-permissions` is **not** the default. Document it as an explicit opt-in in config for people who accept the risk.
 - tmux is still used so you can attach (`tmux attach -t swingdesk`) and watch the agents work, which is the point of "lazydocker + panes".
