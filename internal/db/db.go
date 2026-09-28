@@ -22,7 +22,8 @@ func Open(ctx context.Context, path string) (*sql.DB, error) {
 	q.Add("_pragma", "foreign_keys(1)")
 	q.Add("_pragma", "journal_mode(WAL)")
 	q.Add("_pragma", "busy_timeout(5000)")
-	dsn := "file:" + path + "?" + q.Encode()
+	// Build a proper URI so '#', '?' and '%' in the path are escaped.
+	dsn := (&url.URL{Scheme: "file", Path: path, RawQuery: q.Encode()}).String()
 
 	conn, err := sql.Open("sqlite", dsn)
 	if err != nil {

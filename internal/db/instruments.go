@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/hsk-kr/swingdesk/internal/model"
 )
 
-// SeedInstruments inserts seed rows only when the instruments table is empty,
-// so later user edits are never overwritten. It reports whether it inserted.
+// SeedInstruments inserts seed rows once per database, recorded as
+// app_meta.seeded_at, so later user edits (including deleting every row) are
+// never overwritten. It reports whether it inserted.
 func SeedInstruments(ctx context.Context, conn *sql.DB, seed []model.Instrument) (bool, error) {
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
@@ -17,11 +19,12 @@ func SeedInstruments(ctx context.Context, conn *sql.DB, seed []model.Instrument)
 	}
 	defer tx.Rollback()
 
-	var n int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM instruments`).Scan(&n); err != nil {
-		return false, fmt.Errorf("count instruments: %w", err)
+	var seeded int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM app_meta WHERE key = 'seeded_at'`).Scan(&seeded); err != nil {
+		return false, fmt.Errorf("check seed marker: %w", err)
 	}
-	if n > 0 {
+	if seeded > 0 {
 		return false, nil
 	}
 	for _, in := range seed {
@@ -32,6 +35,10 @@ func SeedInstruments(ctx context.Context, conn *sql.DB, seed []model.Instrument)
 			in.Enabled, in.SortOrder); err != nil {
 			return false, fmt.Errorf("seed %s: %w", in.Symbol, err)
 		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO app_meta (key, value) VALUES ('seeded_at', ?)`,
+		time.Now().UTC().Format(time.RFC3339)); err != nil {
+		return false, fmt.Errorf("record seed marker: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("commit seed: %w", err)
@@ -56,6 +63,9 @@ func ListInstruments(ctx context.Context, conn *sql.DB) ([]model.Instrument, err
 			return nil, fmt.Errorf("scan instrument: %w", err)
 		}
 		in.Kind = model.Kind(kind)
+		if !in.Kind.Valid() {
+			return nil, fmt.Errorf("instrument %s has invalid kind %q", in.Symbol, kind)
+		}
 		out = append(out, in)
 	}
 	return out, rows.Err()

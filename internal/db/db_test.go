@@ -46,7 +46,7 @@ func TestOpenAppliesPragmasAndSchema(t *testing.T) {
 	if err := conn.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&fk); err != nil || fk != 1 {
 		t.Errorf("foreign_keys = %d, %v", fk, err)
 	}
-	for _, table := range []string{"instruments", "refresh_runs", "items", "events", "biases", "schema_migrations"} {
+	for _, table := range []string{"instruments", "refresh_runs", "items", "events", "biases", "schema_migrations", "app_meta"} {
 		var name string
 		err := conn.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&name)
 		if err != nil {
@@ -72,7 +72,7 @@ func TestMigrateIsIdempotentAcrossReopen(t *testing.T) {
 	}
 	defer conn2.Close()
 	var n int
-	if err := conn2.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil || n != 1 {
+	if err := conn2.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil || n != 2 {
 		t.Errorf("schema_migrations rows = %d, %v", n, err)
 	}
 }
@@ -176,18 +176,17 @@ func TestLoadMigrationsValidation(t *testing.T) {
 func TestFailedMigrationRollsBack(t *testing.T) {
 	conn, _ := openTemp(t)
 	ctx := context.Background()
-	migs := []migration{{version: 2, name: "0002_bad.sql", sql: "CREATE TABLE t2 (x INT); NOT SQL;"}}
+	migs := []migration{{version: 3, name: "0003_bad.sql", sql: "CREATE TABLE t2 (x INT); NOT SQL;"}}
 	if err := applyMigrations(ctx, conn, migs); err == nil {
 		t.Fatal("expected error")
 	}
 	var n int
-	conn.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name='t2'`).Scan(&n)
-	if n != 0 {
-		t.Error("partial migration left table behind")
+	if err := conn.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name='t2'`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("partial migration left table behind: n=%d err=%v", n, err)
 	}
-	conn.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&n)
-	if n != 1 {
-		t.Errorf("version = %d, want 1", n)
+	var maxV int
+	if err := conn.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&maxV); err != nil || maxV != 2 {
+		t.Errorf("version = %d, want 2 (%v)", maxV, err)
 	}
 }
 
@@ -216,4 +215,62 @@ func normalize(s string) string {
 		keep = append(keep, line)
 	}
 	return strings.Join(keep, "\n")
+}
+
+func TestSeedNotResurrectedAfterDeletingAll(t *testing.T) {
+	conn, _ := openTemp(t)
+	ctx := context.Background()
+	if _, err := SeedInstruments(ctx, conn, seed(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`DELETE FROM instruments`); err != nil {
+		t.Fatal(err)
+	}
+	inserted, err := SeedInstruments(ctx, conn, seed(t))
+	if err != nil || inserted {
+		t.Fatalf("reseed = %v, %v", inserted, err)
+	}
+}
+
+func TestOpenEscapesSpecialPathChars(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "a#b%c?d")
+	path := filepath.Join(dir, "swingdesk.db")
+	conn, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer conn.Close()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("db not at exact path: %v", err)
+	}
+}
+
+func TestPendingMigrations(t *testing.T) {
+	migs := []migration{{version: 1, name: "0001_a.sql"}, {version: 2, name: "0002_b.sql"}, {version: 3, name: "0003_c.sql"}}
+	got, err := pendingMigrations(migs, map[int]bool{1: true})
+	if err != nil || len(got) != 2 || got[0].version != 2 {
+		t.Errorf("pending = %+v, %v", got, err)
+	}
+	if _, err := pendingMigrations(migs, map[int]bool{1: true, 3: true}); err == nil {
+		t.Error("expected gap error for unapplied 0002 below applied 3")
+	}
+	if _, err := pendingMigrations(migs, map[int]bool{1: true, 9: true}); err == nil {
+		t.Error("expected error for db ahead of binary")
+	}
+}
+
+func TestListInstrumentsRejectsInvalidKind(t *testing.T) {
+	conn, _ := openTemp(t)
+	// Bypass the CHECK constraint to simulate a corrupted row. One connection
+	// so the per-connection pragma applies to the insert.
+	conn.SetMaxOpenConns(1)
+	if _, err := conn.Exec(`PRAGMA ignore_check_constraints = ON`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`INSERT INTO instruments (symbol, name, kind) VALUES ('X', 'X', 'bogus')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ListInstruments(context.Background(), conn); err == nil {
+		t.Fatal("expected invalid kind error")
+	}
 }
