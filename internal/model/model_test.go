@@ -69,3 +69,14 @@ func TestClosedSetAccessorsReturnCopies(t *testing.T) {
 		t.Error("unexpected valid value")
 	}
 }
+
+func TestEventKindValid(t *testing.T) {
+	for _, k := range EventKinds() {
+		if !k.Valid() {
+			t.Errorf("%q invalid", k)
+		}
+	}
+	if EventKind("ipo").Valid() {
+		t.Error("unexpected valid event kind")
+	}
+}

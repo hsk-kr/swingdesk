@@ -16,6 +16,7 @@ import (
 	"github.com/hsk-kr/swingdesk"
 	"github.com/hsk-kr/swingdesk/internal/config"
 	"github.com/hsk-kr/swingdesk/internal/db"
+	"github.com/hsk-kr/swingdesk/internal/ingest"
 	"github.com/hsk-kr/swingdesk/internal/model"
 	"github.com/hsk-kr/swingdesk/internal/sample"
 	"github.com/hsk-kr/swingdesk/internal/ui"
@@ -43,6 +44,7 @@ func run(args []string, out io.Writer, start startUI) error {
 	configFlag := fs.String("config", "", "path to config.yaml (default: XDG config dir)")
 	pathsOnly := fs.Bool("paths", false, "print resolved paths and exit")
 	insertSample := fs.Bool("insert-sample", false, "insert placeholder inbox items and exit")
+	ingestFile := fs.String("ingest", "", "ingest one agent JSON file and exit")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -86,6 +88,8 @@ func run(args []string, out io.Writer, start startUI) error {
 		}
 		fmt.Fprintf(out, "inserted %d sample items into %s\n", n, paths.DBFile)
 		return nil
+	case *ingestFile != "":
+		return ingestOne(ctx, out, conn, *ingestFile, cfg.MaxItemsPerJob)
 	}
 
 	return start(ui.New(ui.Options{
@@ -93,6 +97,19 @@ func run(args []string, out io.Writer, start startUI) error {
 		Instruments: instruments,
 		Location:    tz,
 	}))
+}
+
+func ingestOne(ctx context.Context, out io.Writer, conn *sql.DB, path string, maxItems int) error {
+	res, err := ingest.IngestFile(ctx, conn, path, ingest.Options{MaxItems: maxItems})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "%s: %d new, %d updated, %d events, %d biases, %d skipped\n",
+		res.Job, res.Inserted, res.Updated, res.Events, res.Biases, len(res.Skipped))
+	for _, s := range res.Skipped {
+		fmt.Fprintf(out, "  skipped %s #%d %s: %s\n", s.Kind, s.Index, s.Symbol, s.Reason)
+	}
+	return nil
 }
 
 func printPaths(out io.Writer, cfg config.Config, paths config.Paths, instruments int) {

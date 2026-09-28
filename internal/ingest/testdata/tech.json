@@ -1,0 +1,31 @@
+{
+  "job": "tech",
+  "generated_at": "2026-09-27T11:42:00+01:00",
+  "items": [
+    {
+      "symbol": null,
+      "category": "tech",
+      "title": "HBM supply stays sold out into Q1",
+      "summary": "Supplier commentary points to high-bandwidth memory staying tight.",
+      "body": "Relevant for SKHY and GPU vendors.",
+      "source": "The Information",
+      "url": "https://example.com/hbm-supply",
+      "published_at": "2026-09-27T07:15:00Z",
+      "event_at": null,
+      "event_kind": null
+    },
+    {
+      "symbol": "SKHY",
+      "category": "tech",
+      "title": "SK hynix confirms HBM4 sampling",
+      "summary": "Company says HBM4 samples shipped to a major customer.",
+      "body": "",
+      "source": "Yonhap",
+      "url": "https://example.com/skhy-hbm4",
+      "published_at": "2026-09-27T03:00:00Z",
+      "event_at": null,
+      "event_kind": null
+    }
+  ],
+  "biases": []
+}

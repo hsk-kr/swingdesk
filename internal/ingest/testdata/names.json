@@ -1,0 +1,72 @@
+{
+  "job": "names",
+  "generated_at": "2026-09-27T11:45:00+01:00",
+  "items": [
+    {
+      "symbol": "NVDA",
+      "category": "news",
+      "title": "Hyperscaler capex guide lifts accelerator orders",
+      "summary": "Two cloud providers raised capex guidance.",
+      "body": "",
+      "source": "Reuters",
+      "url": "https://example.com/nvda-capex",
+      "published_at": "2026-09-27T10:00:00Z",
+      "event_at": null,
+      "event_kind": null
+    },
+    {
+      "symbol": "MSFT",
+      "category": "event",
+      "title": "Ignite keynote",
+      "summary": "Ignite keynote date confirmed.",
+      "body": "",
+      "source": "Microsoft IR",
+      "url": "https://example.com/msft-ignite",
+      "published_at": "2026-09-26T16:00:00Z",
+      "event_at": "2026-10-21T16:00:00Z",
+      "event_kind": "product"
+    },
+    {
+      "symbol": "IBM",
+      "category": "news",
+      "title": "Not on the watchlist",
+      "summary": "Should be skipped as an unknown symbol.",
+      "body": "",
+      "source": "Reuters",
+      "url": "https://example.com/ibm",
+      "published_at": null,
+      "event_at": null,
+      "event_kind": null
+    },
+    {
+      "symbol": "META",
+      "category": "sports",
+      "title": "Bad category",
+      "summary": "Should be skipped.",
+      "body": "",
+      "source": "x",
+      "url": "https://example.com/meta-bad",
+      "published_at": null,
+      "event_at": null,
+      "event_kind": null
+    },
+    {
+      "symbol": null,
+      "category": "news",
+      "title": "Names job item without symbol",
+      "summary": "Should be skipped.",
+      "body": "",
+      "source": "x",
+      "url": "https://example.com/nosym",
+      "published_at": null,
+      "event_at": null,
+      "event_kind": null
+    }
+  ],
+  "biases": [
+    {"symbol": "NVDA", "stance": "long", "confidence": 0.62, "rationale": "Fresh capex read-through."},
+    {"symbol": "MSFT", "stance": "none", "confidence": 0.4, "rationale": "Event is low volatility."},
+    {"symbol": "IBM", "stance": "long", "confidence": 0.5, "rationale": "Unknown symbol, skipped."},
+    {"symbol": "META", "stance": "short", "confidence": 1.5, "rationale": "Out of range, skipped."}
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "duration_ms": 91234,
+  "num_turns": 7,
+  "result": "Done.",
+  "session_id": "00000000-0000-0000-0000-000000000000",
+  "total_cost_usd": 0.42,
+  "structured_output": {
+    "job": "tech",
+    "generated_at": "2026-09-27T12:10:00Z",
+    "items": [
+      {
+        "symbol": "AMD",
+        "category": "tech",
+        "title": "AMD details MI400 rack roadmap",
+        "summary": "Roadmap update at an analyst event.",
+        "body": "",
+        "source": "AMD IR",
+        "url": "https://example.com/amd-mi400",
+        "published_at": "2026-09-27T11:00:00Z",
+        "event_at": null,
+        "event_kind": null
+      }
+    ],
+    "biases": []
+  }
+}

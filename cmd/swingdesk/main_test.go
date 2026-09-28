@@ -104,3 +104,20 @@ func TestRunInsertSample(t *testing.T) {
 		t.Errorf("second run output = %q", out.String())
 	}
 }
+
+func TestRunIngestFile(t *testing.T) {
+	_, cfgPath := tempConfig(t, "")
+	var out bytes.Buffer
+	err := run([]string{"-config", cfgPath, "-ingest", "../../internal/ingest/testdata/names.json"}, &out, noUI(t))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	for _, want := range []string{"names: 2 new", "skipped item #2 IBM: unknown symbol"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output missing %q:\n%s", want, out.String())
+		}
+	}
+	if err := run([]string{"-config", cfgPath, "-ingest", "../../internal/ingest/testdata/invalid.json"}, &out, noUI(t)); err == nil {
+		t.Error("invalid file should error")
+	}
+}
