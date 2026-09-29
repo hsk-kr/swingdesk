@@ -22,12 +22,13 @@ const itemColumns = `i.id, COALESCE(i.instrument_id, 0), COALESCE(ins.symbol, ''
 	i.title, i.summary, i.body, COALESCE(i.source, ''), COALESCE(i.url, ''),
 	COALESCE(i.published_at, ''), i.created_at, COALESCE(i.read_at, '')`
 
-// UnreadItems returns unread items matching f, newest created_at first.
+// UnreadItems returns items matching f (unread only unless f.IncludeRead),
+// newest created_at first.
 func UnreadItems(ctx context.Context, conn *sql.DB, f model.ItemFilter) ([]model.Item, error) {
 	q := `SELECT ` + itemColumns + ` FROM items i
 		LEFT JOIN instruments ins ON ins.id = i.instrument_id
-		WHERE i.read_at IS NULL`
-	var args []any
+		WHERE (i.read_at IS NULL OR ?)`
+	args := []any{f.IncludeRead}
 	if f.InstrumentID != 0 {
 		q += ` AND i.instrument_id = ?`
 		args = append(args, f.InstrumentID)

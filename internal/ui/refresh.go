@@ -112,18 +112,12 @@ func (m Model) onRefreshDone(out refresh.Outcome) (tea.Model, tea.Cmd) {
 	m.status.LastRefresh = out.Finished
 	m.status.NextRefresh = m.sched.Next()
 	m.status.Agents = agentStatusFor(out)
+	m.authProblem = isAuthProblem(out)
 	m.notice, m.noticeErr = refreshNotice(out)
 	if m.inFlight > 0 {
 		return m, nil // applyMarked reloads once marks settle
 	}
 	return m.reload()
-}
-
-func agentStatusFor(out refresh.Outcome) model.AgentStatus {
-	if out.Err != nil {
-		return model.AgentStatus{State: model.AgentError, Err: out.Err.Error()}
-	}
-	return model.AgentStatus{State: model.AgentIdle}
 }
 
 func refreshNotice(out refresh.Outcome) (string, bool) {

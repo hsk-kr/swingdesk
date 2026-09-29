@@ -9,6 +9,8 @@ type keyMap struct {
 	Top, Bottom           key.Binding
 	MarkRead, MarkAll     key.Binding
 	Undo, Refresh         key.Binding
+	Filter, Copy          key.Binding
+	ShowRead              key.Binding
 	Help, Quit            key.Binding
 }
 
@@ -28,6 +30,9 @@ func defaultKeys() keyMap {
 		MarkAll:  key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "mark all visible read")),
 		Undo:     key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "undo mark read")),
 		Refresh:  key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "refresh now")),
+		Filter:   key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter by title or symbol")),
+		Copy:     key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "copy URL (OSC 52)")),
+		ShowRead: key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "show / hide read items")),
 		Help:     key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		Quit:     key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
 	}

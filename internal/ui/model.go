@@ -3,7 +3,6 @@ package ui
 
 import (
 	"fmt"
-	"maps"
 	"slices"
 	"time"
 
@@ -36,10 +35,11 @@ type Options struct {
 	Instruments []model.Instrument
 	Location    *time.Location
 	Status      Status
-	Now         func() time.Time // defaults to time.Now
-	Refresh     RefreshFunc      // nil disables scheduling
-	Interval    time.Duration    // refresh interval (default 30m)
-	TmuxSession string           // shown in help as `tmux attach -t …`
+	Now         func() time.Time   // defaults to time.Now
+	Refresh     RefreshFunc        // nil disables scheduling
+	Interval    time.Duration      // refresh interval (default 30m)
+	TmuxSession string             // shown in help as `tmux attach -t …`
+	Copy        func(string) error // extra clipboard path (tmux buffer); OSC 52 is always sent
 }
 
 // Model is the root Bubble Tea model. Update returns modified copies; slices
@@ -61,7 +61,13 @@ type Model struct {
 
 	filters      []Filter
 	filterCursor int
-	visible      []model.Item
+	items        []model.Item // loaded for the current filter
+	visible      []model.Item // items narrowed by query
+	query        string       // `/` text filter over title and symbol
+	typing       bool         // query input has focus
+	showRead     bool         // `s` toggle: include read items
+	copyFn       func(string) error
+	authProblem  bool // last refresh failed because claude is not logged in
 	counts       model.UnreadCounts
 	biases       map[int64]model.Bias
 	loaded       bool
@@ -109,6 +115,7 @@ func New(opts Options) Model {
 		tick:        defaultTick,
 		clock:       now(),
 		session:     opts.TmuxSession,
+		copyFn:      opts.Copy,
 		instruments: byID,
 		loc:         loc,
 		status:      opts.Status,
@@ -135,7 +142,19 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(load, func() tea.Msg { return tickMsg(now) })
 }
 
-func (m Model) currentFilter() model.ItemFilter { return m.filters[m.filterCursor].Query }
+func (m Model) currentFilter() model.ItemFilter {
+	f := m.filters[m.filterCursor].Query
+	f.IncludeRead = m.showRead
+	return f
+}
+
+// setItems installs the loaded list and re-derives the visible rows.
+func (m Model) setItems(items []model.Item) Model {
+	m.items = items
+	m.visible = matchQuery(items, m.query)
+	m.itemCursor = clamp(m.itemCursor, 0, len(m.visible)-1)
+	return m
+}
 
 // reload bumps the sequence (invalidating in-flight loads) and fetches.
 func (m Model) reload() (Model, tea.Cmd) {
@@ -167,8 +186,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.onJobDone(msg)
 	case refreshDoneMsg:
 		return m.onRefreshDone(msg.out)
+	case copiedMsg:
+		return m.onCopied(msg)
+	case tea.PasteMsg:
+		return m.onPaste(msg)
 	case tea.KeyPressMsg:
-		m.notice, m.noticeErr = "", false
+		if !m.typing {
+			m.notice, m.noticeErr = "", false
+		}
 		return m.handleKey(msg)
 	}
 	return m, nil
@@ -189,7 +214,7 @@ func (m Model) applyLoaded(msg loadedMsg) Model {
 	}
 	m.loadErr = ""
 	prev, hadPrev := m.Selected()
-	m.visible = msg.items
+	m = m.setItems(msg.items)
 	m.counts = msg.counts
 	m.biases = msg.biases
 	if hadPrev {
@@ -241,24 +266,57 @@ func (m Model) withError(action string, err error) Model {
 }
 
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if m.showHelp {
+	switch {
+	case m.showHelp:
 		return m.handleHelpKey(msg)
+	case m.typing:
+		return m.handleQueryKey(msg)
 	}
+	if next, cmd, ok := m.handleAction(msg); ok {
+		return next, cmd
+	}
+	return m.handleNav(msg)
+}
+
+// handleAction handles non-navigation keys; ok is false if msg is not one.
+func (m Model) handleAction(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	k := m.keys
 	switch {
 	case key.Matches(msg, k.Quit):
-		return m, tea.Quit
+		return m, tea.Quit, true
 	case key.Matches(msg, k.Help):
-		m.showHelp = true
-		m.helpScroll = 0
+		m.showHelp, m.helpScroll = true, 0
+		return m, nil, true
+	case key.Matches(msg, k.Filter):
+		m.typing = true
+		return m, nil, true
+	case key.Matches(msg, k.Back) && m.query != "":
+		return m.setQuery(""), nil, true
 	case key.Matches(msg, k.MarkRead):
-		return m.markSelectedRead()
+		next, cmd := m.markSelectedRead()
+		return next, cmd, true
 	case key.Matches(msg, k.MarkAll):
-		return m.markVisibleRead()
+		next, cmd := m.markVisibleRead()
+		return next, cmd, true
 	case key.Matches(msg, k.Undo):
-		return m.undoLast()
+		next, cmd := m.undoLast()
+		return next, cmd, true
 	case key.Matches(msg, k.Refresh):
-		return m.forceRefresh()
+		next, cmd := m.forceRefresh()
+		return next, cmd, true
+	case key.Matches(msg, k.Copy):
+		next, cmd := m.copySelected()
+		return next, cmd, true
+	case key.Matches(msg, k.ShowRead):
+		next, cmd := m.toggleShowRead()
+		return next, cmd, true
+	}
+	return m, nil, false
+}
+
+func (m Model) handleNav(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	k := m.keys
+	switch {
 	case key.Matches(msg, k.NextPane):
 		m.focus = (m.focus + 1) % paneCount
 	case key.Matches(msg, k.PrevPane):
@@ -300,87 +358,6 @@ func (m Model) handleHelpKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// markSelectedRead optimistically drops the selected row and persists it.
-func (m Model) markSelectedRead() (tea.Model, tea.Cmd) {
-	it, ok := m.Selected()
-	if !ok {
-		return m, nil
-	}
-	m = m.removeLocally([]model.Item{it})
-	return m.startMark(func(batch int) tea.Cmd { return markReadCmd(m.store, batch, []int64{it.ID}, m.now) })
-}
-
-// markVisibleRead marks every row under the current filter read.
-func (m Model) markVisibleRead() (tea.Model, tea.Cmd) {
-	if len(m.visible) == 0 {
-		return m, nil
-	}
-	gone := m.visible
-	ids := make([]int64, len(gone))
-	for i, it := range gone {
-		ids[i] = it.ID
-	}
-	m = m.removeLocally(gone)
-	return m.startMark(func(batch int) tea.Cmd { return markReadCmd(m.store, batch, ids, m.now) })
-}
-
-// startMark allocates a keypress sequence number and counts the command as
-// in flight.
-func (m Model) startMark(cmd func(batch int) tea.Cmd) (Model, tea.Cmd) {
-	m.batchSeq++
-	m.inFlight++
-	m.loadSeq++
-	return m, cmd(m.batchSeq)
-}
-
-// undoLast restores the most recent mark-read batch of this session.
-func (m Model) undoLast() (tea.Model, tea.Cmd) {
-	if len(m.undo) == 0 {
-		m.notice = "nothing to undo"
-		return m, nil
-	}
-	last := m.undo[len(m.undo)-1]
-	m.undo = m.undo[: len(m.undo)-1 : len(m.undo)-1]
-	return m.startMark(func(int) tea.Cmd { return markUnreadCmd(m.store, last.seq, last.ids) })
-}
-
-// removeLocally hides items and decrements badges before the store confirms,
-// so rapid keypresses act on the row the user sees. The reload after the
-// last in-flight mark reconciles with the DB.
-func (m Model) removeLocally(gone []model.Item) Model {
-	drop := make(map[int64]bool, len(gone))
-	for _, it := range gone {
-		drop[it.ID] = true
-	}
-	m.visible = slices.DeleteFunc(slices.Clone(m.visible), func(it model.Item) bool { return drop[it.ID] })
-	m.counts = decrementCounts(m.counts, gone)
-	m.itemCursor = clamp(m.itemCursor, 0, len(m.visible)-1)
-	m.detailScroll = 0
-	return m
-}
-
-func decrementCounts(c model.UnreadCounts, gone []model.Item) model.UnreadCounts {
-	out := model.UnreadCounts{
-		Total:        c.Total,
-		ByCategory:   maps.Clone(c.ByCategory),
-		ByInstrument: maps.Clone(c.ByInstrument),
-	}
-	if out.ByCategory == nil {
-		out.ByCategory = map[model.Category]int{}
-	}
-	if out.ByInstrument == nil {
-		out.ByInstrument = map[int64]int{}
-	}
-	for _, it := range gone {
-		out.Total = max(out.Total-1, 0)
-		out.ByCategory[it.Category] = max(out.ByCategory[it.Category]-1, 0)
-		if it.InstrumentID != 0 {
-			out.ByInstrument[it.InstrumentID] = max(out.ByInstrument[it.InstrumentID]-1, 0)
-		}
-	}
-	return out
-}
-
 // move shifts the cursor of the focused pane by delta, clamped. Changing the
 // left-pane filter triggers a reload.
 func (m Model) move(delta int) (Model, tea.Cmd) {
@@ -393,7 +370,7 @@ func (m Model) move(delta int) (Model, tea.Cmd) {
 		m.filterCursor = next
 		m.itemCursor = 0
 		m.detailScroll = 0
-		m.visible = nil
+		m.items, m.visible = nil, nil
 		m.loaded = false
 		m.loadErr = ""
 		if m.inFlight > 0 {

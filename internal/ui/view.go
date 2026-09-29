@@ -38,15 +38,13 @@ func (m Model) render() string {
 	l := m.layout()
 	left := box("Watchlist", m.filterLines(l.leftW-2, l.bodyH-2), l.leftW, l.bodyH, m.focus == paneFilters)
 	inbox := box(m.inboxTitle(), m.inboxLines(l.rightW-2, l.inboxH-2), l.rightW, l.inboxH, m.focus == paneInbox)
-	detailBody, offset := m.detailLines(l.rightW-2), m.detailScroll
-	if m.showHelp {
-		detailBody, offset = m.helpLines(), m.helpScroll
-	}
-	detail := box(m.detailTitle(), scroll(detailBody, offset, l.detailH-2), l.rightW, l.detailH, m.focus == paneDetail || m.showHelp)
+	detail := box("Detail", scroll(m.detailLines(l.rightW-2), m.detailScroll, l.detailH-2), l.rightW, l.detailH, m.focus == paneDetail)
 
-	right := inbox + "\n" + detail
-	body := joinColumns(left, right)
-	return m.header() + "\n" + body + "\n" + m.footer()
+	frame := m.header() + "\n" + joinColumns(left, inbox+"\n"+detail) + "\n" + m.footer()
+	if m.showHelp {
+		return overlay(frame, m.helpModal(), m.width)
+	}
+	return frame
 }
 
 type layout struct {
@@ -74,23 +72,16 @@ func (m Model) maxDetailScroll() int {
 	return max(len(m.detailLines(l.rightW-2))-(l.detailH-2), 0)
 }
 
-// maxHelpScroll is the largest useful help scroll offset.
-func (m Model) maxHelpScroll() int {
-	if m.width < minWidth || m.height < minHeight {
-		return 0
-	}
-	return max(len(m.helpLines())-(m.layout().detailH-2), 0)
-}
-
 func (m Model) inboxTitle() string {
-	return fmt.Sprintf("Inbox · %s · unread %d", m.filters[m.filterCursor].Label, len(m.visible))
-}
-
-func (m Model) detailTitle() string {
-	if m.showHelp {
-		return "Help"
+	f := m.filters[m.filterCursor]
+	title := fmt.Sprintf("Inbox · %s · unread %d", f.Label, m.counts.Count(f.Query))
+	if m.showRead {
+		title += " · incl. read"
 	}
-	return "Detail"
+	if m.query != "" {
+		title += fmt.Sprintf(" · /%s (%d)", m.query, len(m.visible))
+	}
+	return title
 }
 
 func (m Model) header() string {
@@ -148,6 +139,9 @@ func (m Model) agentsText() string {
 }
 
 func (m Model) footer() string {
+	if m.typing {
+		return fitWidth(styleFlash.Render(" /"+m.query+"█")+styleMuted.Render("  enter keep · esc clear"), m.width)
+	}
 	if m.notice != "" {
 		style := styleNotice
 		if m.noticeErr {
@@ -156,8 +150,8 @@ func (m Model) footer() string {
 		return fitWidth(style.Render(" "+m.notice), m.width)
 	}
 	parts := []part{
-		{"j/k move", 2}, {"h/l pane", 3}, {"r read", 1}, {"a all read", 4}, {"u undo", 4}, {"R refresh", 3},
-		{"enter open", 5}, {"g/G top/bottom", 6}, {"? help", 0}, {"q quit", 0},
+		{"j/k move", 2}, {"r read", 1}, {"/ filter", 3}, {"c copy", 4}, {"R refresh", 3},
+		{"? help", 0}, {"q quit", 0}, {styleDisclaimer.Render(disclaimer), 0},
 	}
 	return fitWidth(styleMuted.Render(" "+joinFitting(parts, " · ", m.width-1)), m.width)
 }
@@ -233,14 +227,8 @@ func (m Model) filterLines(w, h int) []string {
 }
 
 func (m Model) inboxLines(w, h int) []string {
-	if !m.loaded && len(m.visible) == 0 {
-		return []string{styleMuted.Render(" loading…")}
-	}
-	if m.loadErr != "" && len(m.visible) == 0 {
-		return []string{styleError.Render(" failed to load: " + m.loadErr), styleMuted.Render(" change filter to retry")}
-	}
 	if len(m.visible) == 0 {
-		return []string{styleMuted.Render(" no unread items")}
+		return m.emptyInbox()
 	}
 	start, end := scrollWindow(m.itemCursor, len(m.visible), h)
 	out := make([]string, 0, end-start)
@@ -250,7 +238,11 @@ func (m Model) inboxLines(w, h int) []string {
 		if sym == "" {
 			sym = "—"
 		}
-		symCol := fmt.Sprintf(" %-8s", ansi.Truncate(sym, 8, ""))
+		mark := " "
+		if !it.ReadAt.IsZero() {
+			mark = "✓"
+		}
+		symCol := fmt.Sprintf("%s%-8s", mark, ansi.Truncate(sym, 8, ""))
 		catCol := fmt.Sprintf("%-10s", it.Category)
 		titleW := max(w-ansi.StringWidth(symCol)-ansi.StringWidth(catCol)-1, 1)
 		title := fitWidth(it.Title, titleW) + " "
@@ -260,6 +252,10 @@ func (m Model) inboxLines(w, h int) []string {
 				style = styleSelected
 			}
 			out = append(out, style.Render(symCol+catCol+title))
+			continue
+		}
+		if !it.ReadAt.IsZero() {
+			out = append(out, styleMuted.Render(symCol+catCol+title))
 			continue
 		}
 		out = append(out, styleBold.Render(symCol)+categoryStyle(it.Category).Render(catCol)+styleText.Render(title))
@@ -332,37 +328,6 @@ func (m Model) biasLines(it model.Item, w int) []string {
 // longer than a line.
 func wrap(s string, w int) []string {
 	return strings.Split(ansi.Wrap(s, max(w, 10), " -"), "\n")
-}
-
-func (m Model) helpLines() []string {
-	return []string{
-		" " + styleHeading.Render("Keys"),
-		" j/k ↑/↓    move / scroll",
-		" h/l ←/→    change pane",
-		" tab        next pane",
-		" enter      open detail",
-		" esc        back",
-		" g / G      top / bottom",
-		" r          mark selected read",
-		" a          mark all visible read",
-		" u          undo last mark read",
-		" R          refresh now (resets the timer)",
-		" ? / esc    close help (j/k scroll)",
-		" q          quit",
-		"",
-		" " + styleHeading.Render("Watch the agents"),
-		" tmux attach -t " + m.sessionName(),
-		" " + styleMuted.Render("one window per job: market, tech, names"),
-		"",
-		" " + styleMuted.Render("Full keybinding list lands with the polish pass."),
-	}
-}
-
-func (m Model) sessionName() string {
-	if m.session == "" {
-		return "swingdesk"
-	}
-	return m.session
 }
 
 // scroll returns up to h lines starting at offset (clamped so the last page

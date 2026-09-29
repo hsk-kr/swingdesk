@@ -1,9 +1,11 @@
 package model
 
-// ItemFilter narrows the unread inbox. Zero fields mean "any".
+// ItemFilter narrows the inbox. Zero fields mean "any"; read items are
+// excluded unless IncludeRead is set (the `s` toggle).
 type ItemFilter struct {
 	InstrumentID int64
 	Category     Category
+	IncludeRead  bool
 }
 
 // UnreadCounts are the badge numbers for the left pane.
