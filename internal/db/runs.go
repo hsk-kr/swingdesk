@@ -19,12 +19,13 @@ type Run struct {
 	Error      string
 	JobsOK     int
 	JobsFail   int
+	JobsTotal  int // jobs the run started with
 }
 
-// StartRun inserts a running row and returns its id.
-func StartRun(ctx context.Context, conn DBTX, at time.Time) (int64, error) {
-	res, err := conn.ExecContext(ctx, `INSERT INTO refresh_runs (started_at, status) VALUES (?, ?)`,
-		formatTime(at), string(model.RunRunning))
+// StartRun inserts a running row for totalJobs jobs and returns its id.
+func StartRun(ctx context.Context, conn DBTX, at time.Time, totalJobs int) (int64, error) {
+	res, err := conn.ExecContext(ctx, `INSERT INTO refresh_runs (started_at, status, jobs_total) VALUES (?, ?, ?)`,
+		formatTime(at), string(model.RunRunning), totalJobs)
 	if err != nil {
 		return 0, fmt.Errorf("start run: %w", err)
 	}
@@ -53,14 +54,15 @@ func FinishRun(ctx context.Context, conn DBTX, run Run) error {
 }
 
 // RecordLateJob credits a job file ingested after its run was closed (or
-// while it is still marked running) and recomputes a closed run's status.
-func RecordLateJob(ctx context.Context, conn DBTX, runID int64, totalJobs int) error {
+// while it is still marked running) and recomputes a closed run's status
+// against the job total the run started with.
+func RecordLateJob(ctx context.Context, conn DBTX, runID int64) error {
 	_, err := conn.ExecContext(ctx, `UPDATE refresh_runs SET
-		jobs_ok   = MIN(jobs_ok + 1, ?1),
-		jobs_fail = MAX(MIN(jobs_fail, ?1 - MIN(jobs_ok + 1, ?1)), 0),
+		jobs_ok   = MIN(jobs_ok + 1, jobs_total),
+		jobs_fail = MAX(MIN(jobs_fail, jobs_total - MIN(jobs_ok + 1, jobs_total)), 0),
 		status    = CASE WHEN status = 'running' THEN status
-		                 WHEN jobs_ok + 1 >= ?1 THEN 'ok' ELSE 'partial' END
-		WHERE id = ?2`, totalJobs, runID)
+		                 WHEN jobs_ok + 1 >= jobs_total THEN 'ok' ELSE 'partial' END
+		WHERE id = ?`, runID)
 	if err != nil {
 		return fmt.Errorf("record late job for run %d: %w", runID, err)
 	}
@@ -69,7 +71,7 @@ func RecordLateJob(ctx context.Context, conn DBTX, runID int64, totalJobs int) e
 
 // StaleRuns returns runs still marked running other than exceptID.
 func StaleRuns(ctx context.Context, conn DBTX, exceptID int64) ([]Run, error) {
-	rows, err := conn.QueryContext(ctx, `SELECT id, started_at, jobs_ok, jobs_fail FROM refresh_runs
+	rows, err := conn.QueryContext(ctx, `SELECT id, started_at, jobs_ok, jobs_fail, jobs_total FROM refresh_runs
 		WHERE status = 'running' AND id != ? ORDER BY id`, exceptID)
 	if err != nil {
 		return nil, fmt.Errorf("query stale runs: %w", err)
@@ -79,7 +81,7 @@ func StaleRuns(ctx context.Context, conn DBTX, exceptID int64) ([]Run, error) {
 	for rows.Next() {
 		var r Run
 		var started string
-		if err := rows.Scan(&r.ID, &started, &r.JobsOK, &r.JobsFail); err != nil {
+		if err := rows.Scan(&r.ID, &started, &r.JobsOK, &r.JobsFail, &r.JobsTotal); err != nil {
 			return nil, fmt.Errorf("scan stale run: %w", err)
 		}
 		if r.StartedAt, err = parseTime(started); err != nil {

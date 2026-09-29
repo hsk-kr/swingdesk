@@ -37,6 +37,7 @@ type flags struct {
 	insertSample bool
 	ingestFile   string
 	refreshOnce  bool
+	killAgents   bool
 }
 
 func parseFlags(args []string, out io.Writer) (flags, error) {
@@ -48,6 +49,7 @@ func parseFlags(args []string, out io.Writer) (flags, error) {
 	fs.BoolVar(&f.insertSample, "insert-sample", false, "insert placeholder inbox items and exit")
 	fs.StringVar(&f.ingestFile, "ingest", "", "ingest one agent JSON file and exit")
 	fs.BoolVar(&f.refreshOnce, "refresh-once", false, "run one refresh (agents + ingest) without the TUI and exit")
+	fs.BoolVar(&f.killAgents, "kill-agents", false, "kill the agents' tmux session and exit")
 	if err := fs.Parse(args); err != nil {
 		return flags{}, err
 	}
@@ -87,6 +89,8 @@ func run(args []string, out io.Writer, start startUI) error {
 		return a.ingestOne(ctx, out, f.ingestFile)
 	case f.refreshOnce:
 		return a.refreshOnce(ctx, out)
+	case f.killAgents:
+		return a.killAgents(ctx, out)
 	}
 	return a.runUI(start)
 }

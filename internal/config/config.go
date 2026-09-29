@@ -11,9 +11,12 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/hsk-kr/swingdesk/internal/model"
 )
 
 // PermissionMode is a Claude Code --permission-mode value.
@@ -45,6 +48,29 @@ const MaxItemsCap = 40
 // sessionName excludes '.' and ':' which tmux treats as target separators.
 var sessionName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
+// MarketSession is an exchange session the refresh window can follow.
+type MarketSession string
+
+const (
+	SessionUS MarketSession = "us" // NYSE/Nasdaq, America/New_York
+	SessionEU MarketSession = "eu" // LSE, Europe/London
+)
+
+var marketSessions = [...]MarketSession{SessionUS, SessionEU}
+
+// Valid reports whether s is in the closed set.
+func (s MarketSession) Valid() bool { return slices.Contains(marketSessions[:], s) }
+
+// MarketHours limits scheduled refreshes to exchange hours (R still works).
+type MarketHours struct {
+	Enabled   bool            `yaml:"enabled"`
+	Premarket bool            `yaml:"premarket"`
+	Sessions  []MarketSession `yaml:"sessions"`
+}
+
+// DefaultMegacaps is the first names batch when split_names is on.
+var DefaultMegacaps = []string{"GOOG", "GOOGL", "AMZN", "AAPL", "MSFT", "META", "NVDA", "TSLA"}
+
 // Config is the user-facing configuration file shape.
 type Config struct {
 	RefreshMinutes        int            `yaml:"refresh_minutes"`
@@ -58,6 +84,13 @@ type Config struct {
 	JobTimeoutMinutes     int            `yaml:"job_timeout_minutes"`
 	MaxItemsPerJob        int            `yaml:"max_items_per_job"`
 	DataDir               string         `yaml:"data_dir"`
+
+	// Cost controls (all off by default).
+	MarketHours      MarketHours          `yaml:"market_hours"`
+	SplitNames       bool                 `yaml:"split_names"`     // names → megacap + rest batches
+	MegacapSymbols   []string             `yaml:"megacap_symbols"` // first batch when split
+	ClaudeJobModels  map[model.Job]string `yaml:"claude_job_models"`
+	KillAgentsOnQuit bool                 `yaml:"kill_agents_on_quit"`
 }
 
 // Defaults returns the built-in configuration from docs/PLAN.md.
@@ -72,7 +105,25 @@ func Defaults() Config {
 		JobTimeoutMinutes:    8,
 		MaxItemsPerJob:       40,
 		DataDir:              "",
+		MarketHours:          MarketHours{Sessions: []MarketSession{SessionUS, SessionEU}},
+		MegacapSymbols:       slices.Clone(DefaultMegacaps),
 	}
+}
+
+// Jobs is the job set each refresh runs.
+func (c Config) Jobs() []model.Job {
+	if c.SplitNames {
+		return append(model.DefaultJobs(), model.JobNamesRest)
+	}
+	return model.DefaultJobs()
+}
+
+// ModelFor returns the --model for job: its override, else claude_model.
+func (c Config) ModelFor(job model.Job) string {
+	if m, ok := c.ClaudeJobModels[job]; ok && m != "" {
+		return m
+	}
+	return c.ClaudeModel
 }
 
 // Load reads loc.Path over the defaults. A missing file yields defaults
@@ -94,7 +145,7 @@ func Load(loc Location) (Config, error) {
 	if err := cfg.Validate(); err != nil {
 		return Config{}, fmt.Errorf("config %s: %w", path, err)
 	}
-	return cfg, nil
+	return cfg.normalize(), nil
 }
 
 // decodeStrict decodes a single YAML document, rejecting unknown fields and
@@ -142,10 +193,50 @@ func (c Config) Validate() error {
 	if c.MaxItemsPerJob < 1 || c.MaxItemsPerJob > MaxItemsCap {
 		errs = append(errs, fmt.Errorf("max_items_per_job must be 1..%d (the agent contract cap), got %d", MaxItemsCap, c.MaxItemsPerJob))
 	}
+	errs = append(errs, c.validateCostControls()...)
 	if c.DataDir != "" && !filepath.IsAbs(c.DataDir) && !isHomeRelative(c.DataDir) {
 		errs = append(errs, fmt.Errorf("data_dir %q must be absolute or start with ~/", c.DataDir))
 	}
 	return errors.Join(errs...)
+}
+
+func (c Config) validateCostControls() []error {
+	var errs []error
+	for job := range c.ClaudeJobModels {
+		if !job.Valid() {
+			errs = append(errs, fmt.Errorf("claude_job_models: unknown job %q (want one of %v)", job, model.Jobs()))
+		}
+	}
+	for _, s := range c.MarketHours.Sessions {
+		if !s.Valid() {
+			errs = append(errs, fmt.Errorf("market_hours.sessions: unknown session %q (want one of %v)", s, marketSessions))
+		}
+	}
+	if c.MarketHours.Enabled && len(c.MarketHours.Sessions) == 0 {
+		errs = append(errs, errors.New("market_hours.enabled needs at least one session"))
+	}
+	if c.SplitNames && len(c.MegacapSymbols) == 0 {
+		errs = append(errs, errors.New("split_names needs megacap_symbols"))
+	}
+	seen := map[string]bool{}
+	for _, sym := range c.MegacapSymbols {
+		norm := strings.ToUpper(strings.TrimSpace(sym))
+		if norm == "" || seen[norm] {
+			errs = append(errs, fmt.Errorf("megacap_symbols: empty or duplicate symbol %q", sym))
+		}
+		seen[norm] = true
+	}
+	return errs
+}
+
+// normalize upper-cases megacap symbols (watchlist symbols are upper case).
+func (c Config) normalize() Config {
+	syms := make([]string, len(c.MegacapSymbols))
+	for i, s := range c.MegacapSymbols {
+		syms[i] = strings.ToUpper(strings.TrimSpace(s))
+	}
+	c.MegacapSymbols = syms
+	return c
 }
 
 // RefreshInterval is RefreshMinutes as a duration.

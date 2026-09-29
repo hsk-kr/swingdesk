@@ -17,9 +17,17 @@ type Commander interface {
 // ExecCommander runs real processes.
 type ExecCommander struct{}
 
-// Run implements Commander.
+// commandTimeout bounds each tmux call so a wedged client cannot hang a job.
+const commandTimeout = 10 * time.Second
+
+// Run implements Commander. WaitDelay stops CombinedOutput from blocking
+// forever if a descendant inherited the output pipe.
 func (ExecCommander) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = 2 * time.Second
+	return cmd.CombinedOutput()
 }
 
 // tmux wraps the tmux CLI. socket (-L) isolates tests from the user's server.
@@ -67,6 +75,9 @@ type window struct {
 func (t tmux) windowState(ctx context.Context, session, name string) (window, error) {
 	out, err := t.run(ctx, "list-windows", "-t", "="+session, "-F", "#{window_name} #{pane_dead} #{"+startedOption+"}")
 	if err != nil {
+		if sessionGone(err) {
+			return window{}, nil // killed session/server: the window no longer exists
+		}
 		return window{}, err
 	}
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
@@ -113,4 +124,11 @@ func (t tmux) panePID(ctx context.Context, session, window string) (int, error) 
 		return 0, fmt.Errorf("parse pane pid %q: %w", strings.TrimSpace(out), err)
 	}
 	return pid, nil
+}
+
+// sessionGone matches tmux errors meaning the session or server is gone.
+func sessionGone(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "can't find session") || strings.Contains(msg, "no server running") ||
+		(strings.Contains(msg, "error connecting") && strings.Contains(msg, "No such file or directory"))
 }

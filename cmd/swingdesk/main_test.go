@@ -183,7 +183,7 @@ func TestInitialStatusRestoresLastRefresh(t *testing.T) {
 	}
 	ctx := context.Background()
 	finished := time.Date(2026, 9, 27, 11, 0, 0, 0, time.UTC)
-	id, err := db.StartRun(ctx, a.conn, finished.Add(-time.Minute))
+	id, err := db.StartRun(ctx, a.conn, finished.Add(-time.Minute), 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,5 +202,95 @@ func TestTmuxCopier(t *testing.T) {
 	}
 	if tmuxCopier(func(k string) string { return map[string]string{"TMUX": "/tmp/x,1,0"}[k] }) == nil {
 		t.Error("copier expected inside tmux")
+	}
+}
+
+func TestKillAgentsFlagWithoutSession(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	sockDir, err := os.MkdirTemp("", "sdk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMUX_TMPDIR", sockDir)
+	t.Setenv("TMUX", "")
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	_, cfgPath := tempConfig(t, "tmux_session: sdkill\n")
+	var out bytes.Buffer
+	if err := run([]string{"-config", cfgPath, "-kill-agents"}, &out, noUI(t)); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(out.String(), "killed tmux session sdkill") {
+		t.Errorf("out = %q", out.String())
+	}
+}
+
+func TestSplitNamesRefreshOnce(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	sockDir, err := os.MkdirTemp("", "sds")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMUX_TMPDIR", sockDir)
+	t.Setenv("TMUX", "")
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "kill-server").Run()
+		_ = os.RemoveAll(sockDir)
+	})
+	fixture, err := filepath.Abs("../../internal/ingest/testdata")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := filepath.Join(t.TempDir(), "claude")
+	// names_rest reuses the names fixture with its job field rewritten.
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$(dirname \"$0\")/argv\"\n" +
+		"case \"$2\" in *'macro/market desk'*) cat '" + fixture + "'/market.json;; *'tech sector desk'*) cat '" + fixture + "'/tech.json;;\n" +
+		" *'`names_rest`'*) sed 's/\"job\": \"names\"/\"job\": \"names_rest\"/' '" + fixture + "'/names.json;; *) cat '" + fixture + "'/names.json;; esac\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, cfgPath := tempConfig(t, "claude_bin: "+fake+"\ntmux_session: sdsplit\nsplit_names: true\nclaude_job_models: {tech: haiku}\n")
+	var out bytes.Buffer
+	if err := run([]string{"-config", cfgPath, "-refresh-once"}, &out, noUI(t)); err != nil {
+		t.Fatalf("run: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "run 1: ok") || !strings.Contains(out.String(), "names_rest: 0 new, 2 updated") {
+		t.Errorf("output:\n%s", out.String())
+	}
+	argv, err := os.ReadFile(filepath.Join(filepath.Dir(fake), "argv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(argv), "haiku") != 1 {
+		t.Errorf("exactly the tech job should get --model haiku:\n%s", argv)
+	}
+}
+
+func TestKillAgentsOnQuit(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	sockDir, err := os.MkdirTemp("", "sdq")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMUX_TMPDIR", sockDir)
+	t.Setenv("TMUX", "")
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "kill-server").Run()
+		_ = os.RemoveAll(sockDir)
+	})
+	if out, err := exec.Command("tmux", "-f", "/dev/null", "new-session", "-d", "-s", "sdquit", "sleep 60").CombinedOutput(); err != nil {
+		t.Fatalf("new-session: %v %s", err, out)
+	}
+	_, cfgPath := tempConfig(t, "tmux_session: sdquit\nkill_agents_on_quit: true\nclaude_bin: /usr/bin/false\n")
+	if err := run([]string{"-config", cfgPath}, &bytes.Buffer{}, func(ui.Model) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if exec.Command("tmux", "has-session", "-t", "=sdquit").Run() == nil {
+		t.Error("session should be killed on quit")
 	}
 }

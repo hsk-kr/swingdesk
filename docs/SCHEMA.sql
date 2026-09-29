@@ -1,6 +1,8 @@
 -- swingdesk v1 schema. Canonical source: internal/db/migrations (0001_init.sql mirrors this file; a test enforces it).
 -- Timestamps: every *_at column is fixed-width UTC "YYYY-MM-DDTHH:MM:SS.nnnnnnnnnZ"
 -- (db.formatTime) so TEXT ordering is chronological. Do not write other RFC3339 forms.
+-- Later migrations (see internal/db/migrations): 0002 app_meta (seed marker),
+-- 0003 refresh_runs.jobs_total (job count a run started with).
 
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;

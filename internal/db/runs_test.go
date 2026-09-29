@@ -14,11 +14,11 @@ func TestRunLifecycle(t *testing.T) {
 	if _, ok, err := LastFinishedRun(ctx, conn); ok || err != nil {
 		t.Fatalf("empty db: ok=%v err=%v", ok, err)
 	}
-	a, err := StartRun(ctx, conn, t0)
+	a, err := StartRun(ctx, conn, t0, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, _ := StartRun(ctx, conn, t0.Add(time.Minute))
+	b, _ := StartRun(ctx, conn, t0.Add(time.Minute), 3)
 	stale, err := StaleRuns(ctx, conn, b)
 	if err != nil || len(stale) != 1 || stale[0].ID != a {
 		t.Fatalf("stale = %+v, %v", stale, err)
@@ -30,14 +30,14 @@ func TestRunLifecycle(t *testing.T) {
 	if err != nil || !ok || last.ID != a || last.Status != model.RunPartial || last.Error != "tech: timeout" || last.JobsOK != 2 {
 		t.Errorf("last = %+v ok=%v err=%v", last, ok, err)
 	}
-	if err := RecordLateJob(ctx, conn, a, 3); err != nil {
+	if err := RecordLateJob(ctx, conn, a); err != nil {
 		t.Fatal(err)
 	}
 	last, _, _ = LastFinishedRun(ctx, conn)
 	if last.Status != model.RunOK || last.JobsOK != 3 || last.JobsFail != 0 {
 		t.Errorf("after late job = %+v", last)
 	}
-	if err := RecordLateJob(ctx, conn, b, 3); err != nil {
+	if err := RecordLateJob(ctx, conn, b); err != nil {
 		t.Fatal(err)
 	}
 	stale, _ = StaleRuns(ctx, conn, 0)
@@ -58,12 +58,35 @@ func TestRunLifecycle(t *testing.T) {
 	}
 	// Crediting never exceeds the job total.
 	for range 3 {
-		if err := RecordLateJob(ctx, conn, a, 3); err != nil {
+		if err := RecordLateJob(ctx, conn, a); err != nil {
 			t.Fatal(err)
 		}
 	}
 	last, _, _ = LastFinishedRun(ctx, conn)
 	if last.JobsOK != 3 || last.JobsFail != 0 || last.Status != model.RunOK {
 		t.Errorf("over-credited run = %+v", last)
+	}
+}
+
+func TestRunKeepsItsOwnJobTotal(t *testing.T) {
+	conn, _ := openTemp(t)
+	ctx := context.Background()
+	id, err := StartRun(ctx, conn, t0, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale, err := StaleRuns(ctx, conn, 0)
+	if err != nil || len(stale) != 1 || stale[0].JobsTotal != 4 {
+		t.Fatalf("stale = %+v %v", stale, err)
+	}
+	if err := FinishRun(ctx, conn, Run{ID: id, FinishedAt: t0, Status: model.RunPartial, JobsOK: 3, JobsFail: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordLateJob(ctx, conn, id); err != nil {
+		t.Fatal(err)
+	}
+	last, _, _ := LastFinishedRun(ctx, conn)
+	if last.Status != model.RunOK || last.JobsOK != 4 {
+		t.Errorf("4-job run after late job = %+v", last)
 	}
 }

@@ -1,6 +1,9 @@
 package model
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestKindValid(t *testing.T) {
 	for _, k := range kinds {
@@ -93,5 +96,14 @@ func TestRunStatusFor(t *testing.T) {
 	}
 	if RunStatus("done").Valid() {
 		t.Error("unexpected valid status")
+	}
+}
+
+func TestJobHelpers(t *testing.T) {
+	if !JobNamesRest.IsNames() || JobTech.IsNames() || JobNamesRest.Template() != "names" || JobTech.Template() != "tech" {
+		t.Error("job helpers wrong")
+	}
+	if len(DefaultJobs()) != 3 || slices.Contains(DefaultJobs(), JobNamesRest) {
+		t.Errorf("default jobs = %v", DefaultJobs())
 	}
 }

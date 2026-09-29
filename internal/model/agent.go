@@ -9,18 +9,33 @@ import (
 type Job string
 
 const (
-	JobMarket Job = "market"
-	JobTech   Job = "tech"
-	JobNames  Job = "names"
+	JobMarket    Job = "market"
+	JobTech      Job = "tech"
+	JobNames     Job = "names"
+	JobNamesRest Job = "names_rest" // second names batch when split_names is on
 )
 
-var jobs = [...]Job{JobMarket, JobTech, JobNames}
+var jobs = [...]Job{JobMarket, JobTech, JobNames, JobNamesRest}
 
 // Valid reports whether j is in the closed set.
 func (j Job) Valid() bool { return slices.Contains(jobs[:], j) }
 
-// Jobs returns every job in run order.
+// Jobs returns every known job (including optional ones) in run order.
 func Jobs() []Job { return slices.Clone(jobs[:]) }
+
+// DefaultJobs is the v1 set run on every refresh: three jobs, not one per ticker.
+func DefaultJobs() []Job { return []Job{JobMarket, JobTech, JobNames} }
+
+// IsNames reports whether j is a per-instrument names batch (symbol required).
+func (j Job) IsNames() bool { return j == JobNames || j == JobNamesRest }
+
+// Template is the prompts/<name>.md file the job renders.
+func (j Job) Template() string {
+	if j.IsNames() {
+		return string(JobNames)
+	}
+	return string(j)
+}
 
 // AgentState is the coarse state of the agent runner.
 type AgentState string

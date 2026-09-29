@@ -291,3 +291,55 @@ func TestBiasAsOfIncludesDate(t *testing.T) {
 		t.Errorf("detail should date the stance:\n%s", plain(m))
 	}
 }
+
+type closedGate struct{ next time.Time }
+
+func (g closedGate) Open(time.Time) bool          { return false }
+func (g closedGate) NextOpen(time.Time) time.Time { return g.next }
+
+func TestMarketHoursGateSkipsScheduledButNotR(t *testing.T) {
+	calls := 0
+	spy := refreshSpy{calls: &calls, out: refresh.Outcome{Status: model.RunOK, Finished: testNow}}
+	opens := testNow.Add(20 * time.Hour)
+	m := New(Options{Store: newFakeStore(nil, nil), Instruments: testInstruments(), Location: time.UTC,
+		Now: func() time.Time { return testNow }, Refresh: spy.fn, Gate: closedGate{next: opens},
+		Jobs: []model.Job{model.JobMarket, model.JobNames, model.JobNamesRest}})
+	m.tick = func() tea.Cmd { return nil }
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 150, Height: 30})
+	m = drive(next.(Model), m.Init())
+	if calls != 0 || !strings.Contains(plain(m), "outside market hours · next refresh 28 Sep 07:41") {
+		t.Fatalf("calls=%d\n%s", calls, plain(m))
+	}
+	next, _ = m.Update(keyMsg("R"))
+	m = next.(Model)
+	if !strings.Contains(plain(m), "agents running market,names,names_rest") {
+		t.Errorf("R should run the configured jobs:\n%s", strings.Split(plain(m), "\n")[0])
+	}
+}
+
+func TestClosedStartupImportsLeftoversOnce(t *testing.T) {
+	calls, leftCalls := 0, 0
+	spy := refreshSpy{calls: &calls}
+	store := newFakeStore(nil, nil)
+	m := New(Options{Store: store, Instruments: testInstruments(), Location: time.UTC,
+		Now: func() time.Time { return testNow }, Refresh: spy.fn, Gate: closedGate{next: testNow.Add(time.Hour)},
+		Leftovers: func() (refresh.Leftovers, error) {
+			leftCalls++
+			store.s.items = append(store.s.items, model.Item{ID: 9, Category: model.CategoryNews, Title: "late agent story", CreatedAt: testNow})
+			return refresh.Leftovers{Files: 1, Inserted: 1}, nil
+		}})
+	m.tick = func() tea.Cmd { return nil }
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 150, Height: 30})
+	m = drive(next.(Model), m.Init())
+	if calls != 0 || leftCalls != 1 || !strings.Contains(plain(m), "late agent story") || !strings.Contains(plain(m), "+1 new") {
+		t.Fatalf("calls=%d left=%d\n%s", calls, leftCalls, plain(m))
+	}
+	next, cmd := m.Update(tickMsg(testNow.Add(2 * time.Hour))) // closed again later
+	m = drive(next.(Model), cmd)
+	if leftCalls != 1 {
+		t.Error("leftovers import runs once per session")
+	}
+	if m.noticeErr {
+		t.Error("closed notice is informational, not an error")
+	}
+}

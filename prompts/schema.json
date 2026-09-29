@@ -5,7 +5,7 @@
   "additionalProperties": false,
   "required": ["job", "generated_at", "items", "biases"],
   "properties": {
-    "job": { "type": "string", "enum": ["market", "tech", "names"] },
+    "job": { "type": "string", "enum": ["market", "tech", "names", "names_rest"] },
     "generated_at": { "type": "string", "description": "RFC3339 timestamp with offset" },
     "items": {
       "type": "array",

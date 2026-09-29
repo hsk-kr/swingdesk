@@ -36,7 +36,7 @@ The Go ingest layer rejects files that fail validation.
 
 ## Rules
 
-- `job` is `market`, `tech`, or `names`.
+- `job` is `market`, `tech`, `names`, or `names_rest` (second names batch when `split_names` is on).
 - `category` is one of `tech`, `market`, `news`, `opinion`, `event`, `valuation`, `other`.
 - `stance` is `long`, `short`, or `none`.
 - `confidence` is 0..1.

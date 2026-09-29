@@ -40,6 +40,11 @@ type Options struct {
 	Interval    time.Duration      // refresh interval (default 30m)
 	TmuxSession string             // shown in help as `tmux attach -t …`
 	Copy        func(string) error // extra clipboard path (tmux buffer); OSC 52 is always sent
+	Jobs        []model.Job        // jobs per refresh (default model.DefaultJobs())
+	Gate        refresh.Gate       // market-hours gate for scheduled refreshes; nil = always
+	// Leftovers imports leftover files without running agents; used when the
+	// app starts outside market hours. Optional.
+	Leftovers func() (refresh.Leftovers, error)
 }
 
 // Model is the root Bubble Tea model. Update returns modified copies; slices
@@ -55,6 +60,9 @@ type Model struct {
 	flashN      int
 	flashUntil  time.Time
 	session     string
+	jobs        []model.Job
+	leftovers   func() (refresh.Leftovers, error)
+	leftDone    bool // leftovers-only import already attempted
 	instruments map[int64]model.Instrument
 	loc         *time.Location
 	status      Status
@@ -111,7 +119,9 @@ func New(opts Options) Model {
 		store:       opts.Store,
 		now:         now,
 		refresh:     opts.Refresh,
-		sched:       refresh.NewSchedule(interval),
+		sched:       refresh.NewSchedule(interval, opts.Gate),
+		jobs:        jobsOrDefault(opts.Jobs),
+		leftovers:   opts.Leftovers,
 		tick:        defaultTick,
 		clock:       now(),
 		session:     opts.TmuxSession,
@@ -123,6 +133,13 @@ func New(opts Options) Model {
 		biases:      map[int64]model.Bias{},
 		focus:       paneInbox,
 	}
+}
+
+func jobsOrDefault(jobs []model.Job) []model.Job {
+	if len(jobs) == 0 {
+		return model.DefaultJobs()
+	}
+	return slices.Clone(jobs)
 }
 
 // undoBatch is one mark-read keypress that can be undone.
@@ -188,6 +205,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.onRefreshDone(msg.out)
 	case copiedMsg:
 		return m.onCopied(msg)
+	case leftoversMsg:
+		return m.onLeftovers(msg)
 	case tea.PasteMsg:
 		return m.onPaste(msg)
 	case tea.KeyPressMsg:

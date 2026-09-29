@@ -72,7 +72,7 @@ func TestMigrateIsIdempotentAcrossReopen(t *testing.T) {
 	}
 	defer conn2.Close()
 	var n int
-	if err := conn2.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil || n != 2 {
+	if err := conn2.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil || n != 3 {
 		t.Errorf("schema_migrations rows = %d, %v", n, err)
 	}
 }
@@ -176,7 +176,7 @@ func TestLoadMigrationsValidation(t *testing.T) {
 func TestFailedMigrationRollsBack(t *testing.T) {
 	conn, _ := openTemp(t)
 	ctx := context.Background()
-	migs := []migration{{version: 3, name: "0003_bad.sql", sql: "CREATE TABLE t2 (x INT); NOT SQL;"}}
+	migs := []migration{{version: 4, name: "0004_bad.sql", sql: "CREATE TABLE t2 (x INT); NOT SQL;"}}
 	if err := applyMigrations(ctx, conn, migs); err == nil {
 		t.Fatal("expected error")
 	}
@@ -185,8 +185,8 @@ func TestFailedMigrationRollsBack(t *testing.T) {
 		t.Errorf("partial migration left table behind: n=%d err=%v", n, err)
 	}
 	var maxV int
-	if err := conn.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&maxV); err != nil || maxV != 2 {
-		t.Errorf("version = %d, want 2 (%v)", maxV, err)
+	if err := conn.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&maxV); err != nil || maxV != 3 {
+		t.Errorf("version = %d, want 3 (%v)", maxV, err)
 	}
 }
 
