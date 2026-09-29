@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -606,3 +607,25 @@ type fakeCmd struct {
 }
 
 func (f fakeCmd) Run(context.Context, string, ...string) ([]byte, error) { return []byte(f.out), f.err }
+
+// TestSchemaIsDraft07Compatible guards the real CLI: Claude Code validates
+// --json-schema with a draft-07 Ajv, which rejects a 2020-12 $schema and
+// 2020-12-only keywords before making any API call.
+func TestSchemaIsDraft07Compatible(t *testing.T) {
+	raw, err := Schema()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("schema is not JSON: %v", err)
+	}
+	if v, ok := doc["$schema"]; ok && v != "http://json-schema.org/draft-07/schema#" {
+		t.Errorf("$schema %v is not draft-07", v)
+	}
+	for _, kw := range []string{"$defs", "prefixItems", "unevaluatedProperties", "unevaluatedItems", "dependentRequired", "dependentSchemas", "$dynamicRef"} {
+		if strings.Contains(string(raw), `"`+kw+`"`) {
+			t.Errorf("schema uses 2020-12 keyword %s", kw)
+		}
+	}
+}
