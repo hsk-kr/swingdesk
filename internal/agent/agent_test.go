@@ -551,3 +551,58 @@ func TestKillSession(t *testing.T) {
 		t.Error("session should be gone")
 	}
 }
+
+func TestEmptyNamesBatchIsSkippedWithoutClaude(t *testing.T) {
+	r := tmuxRunner(t, fakeClaude(t, "fail"), 20*time.Second)
+	r.cfg.Jobs = []model.Job{model.JobNames, model.JobNamesRest}
+	r.cfg.Megacaps = []string{"nvda"} // lower case still matches
+	only := []model.Instrument{{ID: 1, Symbol: "NVDA", Name: "Nvidia", Kind: model.KindEquity, Enabled: true}}
+	results, err := r.Run(context.Background(), 1, testNow, only, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, res := range results {
+		switch res.Job {
+		case model.JobNamesRest:
+			if !res.Skipped || res.Err != nil {
+				t.Errorf("names_rest = %+v, want skipped", res)
+			}
+		case model.JobNames:
+			if res.Skipped {
+				t.Error("names batch has NVDA and must run")
+			}
+		}
+	}
+	if _, err := os.Stat(filepath.Join(r.RunDir(1), "names_rest.sh")); !os.IsNotExist(err) {
+		t.Error("skipped batch must not write a script")
+	}
+}
+
+func TestSessionGoneMatching(t *testing.T) {
+	cases := map[string]bool{
+		"tmux has-session: exit status 1: can't find session: sd":                true,
+		"tmux list-windows: exit status 1: no server running on /tmp/tmux-501/x": true,
+		"error connecting to /tmp/tmux-501/default (No such file or directory)":  true,
+		"error connecting to /very/long/path (File name too long)":               false,
+		"error connecting to /tmp/tmux-501/default (Permission denied)":          false,
+	}
+	for msg, want := range cases {
+		if got := sessionGone(errors.New(msg)); got != want {
+			t.Errorf("%q = %v", msg, got)
+		}
+	}
+}
+
+func TestKillSessionSurfacesUnreachableServer(t *testing.T) {
+	r := New(Config{Session: "sd", TmuxBin: "sh"}, fakeCmd{err: errors.New("exit status 1"), out: "error connecting to /x (Permission denied)"})
+	if err := r.KillSession(context.Background()); err == nil {
+		t.Error("an unreachable tmux server must not be reported as killed")
+	}
+}
+
+type fakeCmd struct {
+	out string
+	err error
+}
+
+func (f fakeCmd) Run(context.Context, string, ...string) ([]byte, error) { return []byte(f.out), f.err }

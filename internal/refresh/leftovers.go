@@ -108,7 +108,7 @@ func (r Refresher) importOne(ctx context.Context, f leftover) (int, bool, error)
 		return 0, true, nil
 	}
 	if runID != 0 {
-		if err := db.RecordLateJob(ctx, r.d.Conn, runID, len(r.d.Jobs)); err != nil {
+		if err := db.RecordLateJob(ctx, r.d.Conn, runID); err != nil {
 			return 0, false, err
 		}
 	}
@@ -135,8 +135,8 @@ func (r Refresher) closeStaleRuns(ctx context.Context, currentRun int64) (int, e
 	if err != nil {
 		return 0, err
 	}
-	total := len(r.d.Jobs)
 	for _, run := range stale {
+		total := run.JobsTotal // the run's own job count, not today's config
 		run.FinishedAt = r.d.Now()
 		run.JobsOK = min(run.JobsOK, total)
 		run.Status = model.RunStatusFor(run.JobsOK, total)

@@ -87,3 +87,17 @@ func TestScheduleRespectsGate(t *testing.T) {
 		t.Errorf("R must ignore market hours, got %v", d)
 	}
 }
+
+func TestHoursCloseBoundaryAndOtherExchangeOpen(t *testing.T) {
+	us := mustHours(t, config.MarketHours{Enabled: true, Sessions: []config.MarketSession{config.SessionUS}})
+	if us.Open(utc("2026-09-28T20:00:00Z")) { // exactly 16:00 ET
+		t.Error("close is exclusive")
+	}
+	if !us.Open(utc("2026-09-28T19:59:59Z")) {
+		t.Error("15:59:59 ET is open")
+	}
+	// London open, New York closed: US-only gate points at 09:30 ET the same day.
+	if got := us.NextOpen(utc("2026-09-28T09:00:00Z")); !got.Equal(utc("2026-09-28T13:30:00Z")) {
+		t.Errorf("NextOpen = %v", got)
+	}
+}

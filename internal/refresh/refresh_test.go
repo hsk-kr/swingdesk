@@ -394,7 +394,7 @@ func TestArchiveNeverOverwrites(t *testing.T) {
 func TestLeftoverOlderThanRunIsNotCredited(t *testing.T) {
 	e := setup(t)
 	future := now.Add(24 * 365 * time.Hour * 2) // run "started" after the file was written
-	id, err := db.StartRun(context.Background(), e.conn, future)
+	id, err := db.StartRun(context.Background(), e.conn, future, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,4 +422,47 @@ func TestRefreshReportsProgress(t *testing.T) {
 	if len(seen) != 3 {
 		t.Errorf("progress = %v", seen)
 	}
+}
+
+func TestStaleRunUsesItsOwnJobTotal(t *testing.T) {
+	e := setup(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	out := e.refresher(fakeRunner{inbox: e.inbox, cancel: cancel}).Refresh(ctx, nil) // 3-job run left running
+	dir := filepath.Join(e.inbox, strconv.FormatInt(out.RunID, 10))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, job := range model.DefaultJobs() {
+		if err := copyFixture(string(job), filepath.Join(dir, string(job)+".json")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Relaunch with split_names on (4 jobs).
+	r := New(Deps{Conn: e.conn, Runner: fakeRunner{inbox: e.inbox}, InboxDir: e.inbox, RunsDir: e.runs, LockPath: e.lock,
+		Jobs: append(model.DefaultJobs(), model.JobNamesRest), MaxItems: 40, Now: func() time.Time { return now }})
+	left, err := r.ImportLeftoversOnly(context.Background())
+	if err != nil || left.Files != 3 || left.Closed != 1 {
+		t.Fatalf("leftovers = %+v %v", left, err)
+	}
+	status, ok, fail, _ := runRow(t, e.conn, out.RunID)
+	if status != "ok" || ok != 3 || fail != 0 {
+		t.Errorf("old 3-job run = %s %d/%d", status, ok, fail)
+	}
+}
+
+func TestSkippedBatchCountsAsDone(t *testing.T) {
+	e := setup(t)
+	r := New(Deps{Conn: e.conn, Runner: skipRestRunner{fakeRunner{inbox: e.inbox}}, InboxDir: e.inbox, RunsDir: e.runs,
+		LockPath: e.lock, Jobs: append(model.DefaultJobs(), model.JobNamesRest), MaxItems: 40, Now: func() time.Time { return now }})
+	out := r.Refresh(context.Background(), nil)
+	if out.Status != model.RunOK {
+		t.Errorf("status = %s, jobs = %+v", out.Status, out.Jobs)
+	}
+}
+
+type skipRestRunner struct{ fakeRunner }
+
+func (s skipRestRunner) Run(ctx context.Context, id int64, n time.Time, ins []model.Instrument, p agent.Progress) ([]agent.Result, error) {
+	res, err := s.fakeRunner.Run(ctx, id, n, ins, p)
+	return append(res, agent.Result{Job: model.JobNamesRest, Skipped: true}), err
 }

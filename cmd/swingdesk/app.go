@@ -135,6 +135,7 @@ func (a *app) runUI(start startUI) error {
 		Copy:        tmuxCopier(os.Getenv),
 		Jobs:        a.cfg.Jobs(),
 		Gate:        gate,
+		Leftovers:   func() (refresh.Leftovers, error) { return r.ImportLeftoversOnly(ctx) },
 		Refresh: func(progress func(model.Job)) refresh.Outcome {
 			return r.Refresh(ctx, func(res agent.Result) { progress(res.Job) })
 		},

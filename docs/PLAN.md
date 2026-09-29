@@ -56,7 +56,7 @@ Default filter: unread only. `s` toggles read items on (off by default).
 | Language | Go 1.23+ | requested |
 | TUI | Bubble Tea + Bubbles + Lip Gloss | async ticks, subprocesses, and list/viewport widgets. Lazydocker itself uses gocui; we copy the *layout*, not the library. |
 | DB | SQLite via `modernc.org/sqlite` (pure Go) | no CGO, easy single-file store |
-| Scheduler | Bubble Tea `tea.Tick` every second for countdown; work fires on start + every 30 min | only while the process is alive |
+| Scheduler | Bubble Tea `tea.Tick` every second for countdown; work fires on start + every 30 min (optionally only inside `market_hours`; `R` always works) | only while the process is alive |
 | Agents | Claude Code CLI in a tmux session | requested |
 | Model | omit `--model` so the CLI default is used (currently Opus 5.5) | requested |
 | Config | YAML under `~/.config/swingdesk/config.yaml` | watchlist + intervals + tmux session name |

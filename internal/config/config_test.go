@@ -99,6 +99,7 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		"bad session":     "market_hours: {enabled: true, sessions: [asia]}\n",
 		"no sessions":     "market_hours: {enabled: true, sessions: []}\n",
 		"split no caps":   "split_names: true\nmegacap_symbols: []\n",
+		"dup megacap":     "megacap_symbols: [NVDA, nvda]\n",
 		"stale default":   "claude_permission_mode: default\n",
 		"zero timeout":    "job_timeout_minutes: 0\n",
 		"negative budget": "claude_max_budget_usd: -1\n",
@@ -258,5 +259,17 @@ func TestCostControls(t *testing.T) {
 	d := Defaults()
 	if len(d.Jobs()) != 3 || d.MarketHours.Enabled || d.SplitNames || d.KillAgentsOnQuit {
 		t.Error("cost controls must default off")
+	}
+}
+
+func TestMegacapsNormalized(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, p, "split_names: true\nmegacap_symbols: [' nvda', Msft]\n")
+	cfg, err := Load(Location{Path: p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(cfg.MegacapSymbols, []string{"NVDA", "MSFT"}) {
+		t.Errorf("megacaps = %v", cfg.MegacapSymbols)
 	}
 }

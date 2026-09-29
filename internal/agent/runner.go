@@ -66,6 +66,7 @@ type Result struct {
 	Job      model.Job
 	Path     string // <run dir>/<job>.json on success
 	Err      error
+	Skipped  bool // names batch with no instruments: claude was not started
 	Duration time.Duration
 }
 
@@ -161,6 +162,10 @@ func (r Runner) Run(ctx context.Context, runID int64, now time.Time, instruments
 func (r Runner) runJob(ctx context.Context, runID int64, dir string, job model.Job, now time.Time, instruments []model.Instrument) Result {
 	start := time.Now()
 	res := Result{Job: job}
+	if job.IsNames() && len(r.instrumentsFor(job, instruments)) == 0 {
+		res.Skipped = true // never pay for a run with an empty watchlist
+		return res
+	}
 	if err := r.startJob(ctx, runID, dir, job, now, instruments); err != nil {
 		res.Err = err
 		return res
@@ -236,7 +241,8 @@ func (r Runner) instrumentsFor(job model.Job, all []model.Instrument) []model.In
 	wantMega := job == model.JobNames
 	out := make([]model.Instrument, 0, len(all))
 	for _, in := range all {
-		if slices.Contains(r.cfg.Megacaps, in.Symbol) == wantMega {
+		isMega := slices.ContainsFunc(r.cfg.Megacaps, func(s string) bool { return strings.EqualFold(strings.TrimSpace(s), in.Symbol) })
+		if isMega == wantMega {
 			out = append(out, in)
 		}
 	}
@@ -247,7 +253,10 @@ func (r Runner) instrumentsFor(job model.Job, all []model.Instrument) []model.In
 // -kill-agents). A missing session or server is not an error.
 func (r Runner) KillSession(ctx context.Context) error {
 	if _, err := r.tmux.run(ctx, "has-session", "-t", "="+r.cfg.Session); err != nil {
-		return nil
+		if sessionGone(err) {
+			return nil
+		}
+		return err
 	}
 	_, err := r.tmux.run(ctx, "kill-session", "-t", "="+r.cfg.Session)
 	return err
@@ -282,6 +291,9 @@ func (r Runner) waitJob(ctx context.Context, dir string, job model.Job) (string,
 		case <-deadline.C:
 			return r.timeout(dir, job)
 		case <-tick.C:
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
 			if r.paneDead(ctx, job) {
 				if code, ok := readExit(exitFile); ok { // published just before exiting
 					return finished(dir, job, code)

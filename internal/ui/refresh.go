@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -99,9 +100,43 @@ func (m Model) decide(d refresh.Decision) (Model, tea.Cmd) {
 	case refresh.Skipped:
 		m.notice = "refresh skipped: previous run still running"
 	case refresh.Closed:
-		m.notice = "outside market hours · next refresh " + m.fmtDateTimeOr(m.sched.Next(), "—") + " · R refreshes now"
+		m.notice, m.noticeErr = "outside market hours · next refresh "+m.fmtDateTimeOr(m.sched.Next(), "—")+" · R refreshes now", false
+		return m.importLeftoversOnce()
 	}
 	return m, nil
+}
+
+// leftoversMsg reports a leftovers-only import.
+type leftoversMsg struct {
+	left refresh.Leftovers
+	err  error
+}
+
+// importLeftoversOnce imports files left by a previous session when no
+// refresh will run soon (outside market hours), so they are not stranded.
+func (m Model) importLeftoversOnce() (Model, tea.Cmd) {
+	if m.leftDone || m.leftovers == nil {
+		return m, nil
+	}
+	m.leftDone = true
+	fn := m.leftovers
+	return m, func() tea.Msg {
+		left, err := fn()
+		return leftoversMsg{left: left, err: err}
+	}
+}
+
+func (m Model) onLeftovers(msg leftoversMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil && !errors.Is(msg.err, refresh.ErrBusy) {
+		return m.withError("import leftovers", msg.err), nil
+	}
+	if msg.left.Inserted > 0 {
+		m.flashN, m.flashUntil = msg.left.Inserted, m.now().Add(flashFor)
+	}
+	if m.inFlight > 0 {
+		return m, nil
+	}
+	return m.reload()
 }
 
 // onRefreshDone records the outcome, flashes "+N new" and reloads the inbox.

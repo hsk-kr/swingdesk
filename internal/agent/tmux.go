@@ -17,9 +17,17 @@ type Commander interface {
 // ExecCommander runs real processes.
 type ExecCommander struct{}
 
-// Run implements Commander.
+// commandTimeout bounds each tmux call so a wedged client cannot hang a job.
+const commandTimeout = 10 * time.Second
+
+// Run implements Commander. WaitDelay stops CombinedOutput from blocking
+// forever if a descendant inherited the output pipe.
 func (ExecCommander) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = 2 * time.Second
+	return cmd.CombinedOutput()
 }
 
 // tmux wraps the tmux CLI. socket (-L) isolates tests from the user's server.
@@ -122,5 +130,5 @@ func (t tmux) panePID(ctx context.Context, session, window string) (int, error) 
 func sessionGone(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "can't find session") || strings.Contains(msg, "no server running") ||
-		strings.Contains(msg, "error connecting")
+		(strings.Contains(msg, "error connecting") && strings.Contains(msg, "No such file or directory"))
 }

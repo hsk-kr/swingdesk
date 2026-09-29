@@ -92,7 +92,7 @@ func (r Refresher) Refresh(ctx context.Context, progress agent.Progress) Outcome
 	defer lock.release()
 
 	started := r.d.Now()
-	if out.RunID, err = db.StartRun(ctx, r.d.Conn, started); err != nil {
+	if out.RunID, err = db.StartRun(ctx, r.d.Conn, started, len(r.d.Jobs)); err != nil {
 		out.Err, out.Status = err, model.RunError
 		return r.done(out)
 	}
@@ -144,8 +144,8 @@ func (r Refresher) done(out Outcome) Outcome {
 // inbox so the next leftover import retries it.
 func (r Refresher) ingestResult(ctx context.Context, runID int64, res agent.Result) JobOutcome {
 	jo := JobOutcome{Job: res.Job, Err: res.Err}
-	if res.Err != nil {
-		return jo
+	if res.Err != nil || res.Skipped {
+		return jo // a skipped (empty) batch counts as done
 	}
 	ir, err := ingest.IngestFile(ctx, r.d.Conn, res.Path, r.ingestOptions(runID))
 	jo.Err, jo.Inserted, jo.Updated, jo.Skipped = err, ir.Inserted, ir.Updated, len(ir.Skipped)
@@ -156,6 +156,17 @@ func (r Refresher) ingestResult(ctx context.Context, runID int64, res agent.Resu
 		r.d.Logger.Error("archive job file", "path", res.Path, "err", archErr)
 	}
 	return jo
+}
+
+// ImportLeftoversOnly imports leftover files and closes stale runs without
+// starting agents (e.g. launched outside market hours). Busy is not an error.
+func (r Refresher) ImportLeftoversOnly(ctx context.Context) (Leftovers, error) {
+	lock, err := acquireLock(r.d.LockPath)
+	if err != nil {
+		return Leftovers{}, err
+	}
+	defer lock.release()
+	return r.ImportLeftovers(ctx, 0), nil
 }
 
 func (r Refresher) ingestOptions(runID int64) ingest.Options {

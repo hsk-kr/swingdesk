@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -144,7 +145,7 @@ func Load(loc Location) (Config, error) {
 	if err := cfg.Validate(); err != nil {
 		return Config{}, fmt.Errorf("config %s: %w", path, err)
 	}
-	return cfg, nil
+	return cfg.normalize(), nil
 }
 
 // decodeStrict decodes a single YAML document, rejecting unknown fields and
@@ -217,7 +218,25 @@ func (c Config) validateCostControls() []error {
 	if c.SplitNames && len(c.MegacapSymbols) == 0 {
 		errs = append(errs, errors.New("split_names needs megacap_symbols"))
 	}
+	seen := map[string]bool{}
+	for _, sym := range c.MegacapSymbols {
+		norm := strings.ToUpper(strings.TrimSpace(sym))
+		if norm == "" || seen[norm] {
+			errs = append(errs, fmt.Errorf("megacap_symbols: empty or duplicate symbol %q", sym))
+		}
+		seen[norm] = true
+	}
 	return errs
+}
+
+// normalize upper-cases megacap symbols (watchlist symbols are upper case).
+func (c Config) normalize() Config {
+	syms := make([]string, len(c.MegacapSymbols))
+	for i, s := range c.MegacapSymbols {
+		syms[i] = strings.ToUpper(strings.TrimSpace(s))
+	}
+	c.MegacapSymbols = syms
+	return c
 }
 
 // RefreshInterval is RefreshMinutes as a duration.

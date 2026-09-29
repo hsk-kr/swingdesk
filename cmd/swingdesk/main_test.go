@@ -183,7 +183,7 @@ func TestInitialStatusRestoresLastRefresh(t *testing.T) {
 	}
 	ctx := context.Background()
 	finished := time.Date(2026, 9, 27, 11, 0, 0, 0, time.UTC)
-	id, err := db.StartRun(ctx, a.conn, finished.Add(-time.Minute))
+	id, err := db.StartRun(ctx, a.conn, finished.Add(-time.Minute), 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,5 +266,31 @@ func TestSplitNamesRefreshOnce(t *testing.T) {
 	}
 	if strings.Count(string(argv), "haiku") != 1 {
 		t.Errorf("exactly the tech job should get --model haiku:\n%s", argv)
+	}
+}
+
+func TestKillAgentsOnQuit(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	sockDir, err := os.MkdirTemp("", "sdq")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMUX_TMPDIR", sockDir)
+	t.Setenv("TMUX", "")
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "kill-server").Run()
+		_ = os.RemoveAll(sockDir)
+	})
+	if out, err := exec.Command("tmux", "-f", "/dev/null", "new-session", "-d", "-s", "sdquit", "sleep 60").CombinedOutput(); err != nil {
+		t.Fatalf("new-session: %v %s", err, out)
+	}
+	_, cfgPath := tempConfig(t, "tmux_session: sdquit\nkill_agents_on_quit: true\nclaude_bin: /usr/bin/false\n")
+	if err := run([]string{"-config", cfgPath}, &bytes.Buffer{}, func(ui.Model) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if exec.Command("tmux", "has-session", "-t", "=sdquit").Run() == nil {
+		t.Error("session should be killed on quit")
 	}
 }
