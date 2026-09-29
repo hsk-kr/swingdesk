@@ -195,3 +195,12 @@ func TestInitialStatusRestoresLastRefresh(t *testing.T) {
 		t.Errorf("status = %+v %v", st, err)
 	}
 }
+
+func TestTmuxCopier(t *testing.T) {
+	if tmuxCopier(func(string) string { return "" }) != nil {
+		t.Error("no copier outside tmux")
+	}
+	if tmuxCopier(func(k string) string { return map[string]string{"TMUX": "/tmp/x,1,0"}[k] }) == nil {
+		t.Error("copier expected inside tmux")
+	}
+}

@@ -66,6 +66,8 @@ func keyMsg(k string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyEscape}
 	case "down":
 		return tea.KeyPressMsg{Code: tea.KeyDown}
+	case "backspace":
+		return tea.KeyPressMsg{Code: tea.KeyBackspace}
 	case "ctrl+c":
 		return tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
 	}
@@ -257,7 +259,7 @@ func TestDetailScrollIsClamped(t *testing.T) {
 func TestHelpToggleAndQuit(t *testing.T) {
 	m := newTestModel(t, 120, 40)
 	m = press(t, m, "?")
-	if !m.showHelp || !strings.Contains(plain(m), "change pane") {
+	if !m.showHelp || !strings.Contains(plain(m), "pane left") {
 		t.Fatal("help not shown")
 	}
 	m = press(t, m, "j")
@@ -355,14 +357,14 @@ func TestHelpScrollsIndependently(t *testing.T) {
 	m := newTestModel(t, 60, 14)
 	m = press(t, m, "l", "j", "j", "j")
 	m = press(t, m, "?")
-	if m.helpScroll != 0 || !strings.Contains(plain(m), "Keys") {
+	if m.helpScroll != 0 || !strings.Contains(plain(m), "Navigate") {
 		t.Fatal("help must open at the top regardless of detail scroll")
 	}
 	if m.maxHelpScroll() == 0 {
 		t.Fatal("help should overflow at 60x14")
 	}
 	m = press(t, m, "G")
-	if !strings.Contains(plain(m), "Full keybinding list") {
+	if !strings.Contains(plain(m), "Stances are a") {
 		t.Error("G should reveal the end of help")
 	}
 	m = press(t, m, "g")

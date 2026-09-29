@@ -38,7 +38,7 @@ func (f fakeStore) Unread(_ context.Context, q model.ItemFilter) ([]model.Item, 
 	}
 	var out []model.Item
 	for _, it := range f.s.items {
-		if !it.ReadAt.IsZero() {
+		if !it.ReadAt.IsZero() && !q.IncludeRead {
 			continue
 		}
 		if q.InstrumentID != 0 && it.InstrumentID != q.InstrumentID {

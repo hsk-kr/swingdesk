@@ -195,3 +195,18 @@ func TestUnreadTiesOrderByIDDesc(t *testing.T) {
 		t.Errorf("order = %v, want %v", ids, []int64{c, b, a})
 	}
 }
+
+func TestIncludeReadShowsReadItems(t *testing.T) {
+	conn, _ := seededDB(t)
+	ctx := context.Background()
+	a := insert(t, conn, model.Item{Category: model.CategoryNews, Title: "read one", CreatedAt: t0})
+	insert(t, conn, model.Item{Category: model.CategoryNews, Title: "unread one", CreatedAt: t0.Add(time.Minute)})
+	if _, err := MarkRead(ctx, conn, []int64{a}, t0); err != nil {
+		t.Fatal(err)
+	}
+	unread, _ := UnreadItems(ctx, conn, model.ItemFilter{})
+	all, err := UnreadItems(ctx, conn, model.ItemFilter{IncludeRead: true})
+	if err != nil || len(unread) != 1 || len(all) != 2 || all[1].ReadAt.IsZero() {
+		t.Errorf("unread=%d all=%d err=%v", len(unread), len(all), err)
+	}
+}

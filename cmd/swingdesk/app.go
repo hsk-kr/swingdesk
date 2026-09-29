@@ -8,7 +8,9 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/hsk-kr/swingdesk"
@@ -116,10 +118,28 @@ func (a *app) runUI(start startUI) error {
 		Interval:    a.cfg.RefreshInterval(),
 		TmuxSession: a.cfg.TmuxSession,
 		Status:      status,
+		Copy:        tmuxCopier(os.Getenv),
 		Refresh: func(progress func(model.Job)) refresh.Outcome {
 			return r.Refresh(ctx, func(res agent.Result) { progress(res.Job) })
 		},
 	}))
+}
+
+// tmuxCopier returns a clipboard path for use inside tmux: `load-buffer -w`
+// makes tmux itself emit OSC 52 to the outer terminal (tmux ignores OSC 52
+// from applications unless set-clipboard is on). Nil outside tmux.
+func tmuxCopier(getenv func(string) string) func(string) error {
+	if getenv("TMUX") == "" {
+		return nil
+	}
+	return func(s string) error {
+		cmd := exec.Command("tmux", "load-buffer", "-w", "-")
+		cmd.Stdin = strings.NewReader(s)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+		}
+		return nil
+	}
 }
 
 // initialStatus shows the last finished run so a restart does not say "never".
