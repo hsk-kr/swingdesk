@@ -26,7 +26,7 @@ func RenderPrompt(in PromptInput) (string, error) {
 	if !in.Job.Valid() {
 		return "", fmt.Errorf("unknown job %q", in.Job)
 	}
-	tmpl, err := fs.ReadFile(swingdesk.Prompts, "prompts/"+string(in.Job)+".md")
+	tmpl, err := fs.ReadFile(swingdesk.Prompts, "prompts/"+in.Job.Template()+".md")
 	if err != nil {
 		return "", fmt.Errorf("read %s prompt: %w", in.Job, err)
 	}

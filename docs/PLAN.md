@@ -86,7 +86,7 @@ On refresh:
 6. Upsert items with dedupe. Close the run (`ok` / `error` / `partial`).
 7. TUI flashes "N new items".
 
-Quit does not kill the tmux session by default (a late agent can still finish a file). Next launch imports any leftover inbox files. Optional `swingdesk --kill-agents` later.
+Quit does not kill the tmux session by default (a late agent can still finish a file). Next launch imports any leftover inbox files. `kill_agents_on_quit: true` or `swingdesk -kill-agents` ends the session.
 
 ## Agent jobs (cost-aware)
 
@@ -98,7 +98,7 @@ v1 jobs per refresh (3 panes):
 2. **tech** — sector tape: AI infra, semis, cloud, ads, EVs.
 3. **names** — the whole watchlist in one prompt. Per instrument: today's material news, next dated events, a short expert-consensus snapshot, and a swing bias.
 
-If a names run starts timing out, split into two batches (megacap / rest) in v1.1 — tracked as an issue, not v1 scope.
+If a names run starts timing out, set `split_names: true`: the names job becomes two batches (`names` = `megacap_symbols`, `names_rest` = the others), both from `prompts/names.md`.
 
 Headless Claude invocation (print mode, structured output):
 
@@ -189,7 +189,7 @@ Match the GitHub issues:
 
 ## Risks
 
-- **Cost**: Opus every 30 minutes is expensive. Mitigation: 3 jobs not 14; hard cap items; later a "market hours only" window.
+- **Cost**: Opus every 30 minutes is expensive. Mitigation: 3 jobs not 14; hard cap items; opt-in `market_hours` window, per-job `claude_job_models` (e.g. haiku for tech headlines) and optional `claude_max_budget_usd`.
 - **Claude Code not installed / not logged in**: TUI must show a clear error and keep showing existing DB rows.
 - **tmux missing**: same — surface it, do not crash the inbox.
 - **Stuck agents**: run timeout (e.g. 8 minutes). Mark run `partial`. Do not block the TUI.
@@ -206,5 +206,5 @@ Match the GitHub issues:
 | Refresh when the TUI is closed? | No, v1 is in-process only |
 | Show read items? | Hidden by default; `s` toggles |
 | Auto-open sources in browser? | Not v1; `c` copies the URL (OSC 52) |
-| Market-hours-only refresh? | No, always 30 min while running |
-| Kill tmux on quit? | No |
+| Market-hours-only refresh? | Off by default; `market_hours.enabled` |
+| Kill tmux on quit? | No by default; `kill_agents_on_quit` |

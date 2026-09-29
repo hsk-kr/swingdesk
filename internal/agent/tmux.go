@@ -67,6 +67,9 @@ type window struct {
 func (t tmux) windowState(ctx context.Context, session, name string) (window, error) {
 	out, err := t.run(ctx, "list-windows", "-t", "="+session, "-F", "#{window_name} #{pane_dead} #{"+startedOption+"}")
 	if err != nil {
+		if sessionGone(err) {
+			return window{}, nil // killed session/server: the window no longer exists
+		}
 		return window{}, err
 	}
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
@@ -113,4 +116,11 @@ func (t tmux) panePID(ctx context.Context, session, window string) (int, error) 
 		return 0, fmt.Errorf("parse pane pid %q: %w", strings.TrimSpace(out), err)
 	}
 	return pid, nil
+}
+
+// sessionGone matches tmux errors meaning the session or server is gone.
+func sessionGone(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "can't find session") || strings.Contains(msg, "no server running") ||
+		strings.Contains(msg, "error connecting")
 }

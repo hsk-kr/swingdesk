@@ -17,7 +17,7 @@ func checkItem(job model.Job, it RawItem, known map[string]model.Instrument) (st
 		sym = strings.ToUpper(strings.TrimSpace(*it.Symbol))
 	}
 	switch {
-	case sym == "" && job == model.JobNames:
+	case sym == "" && job.IsNames():
 		return "", errors.New("names job items need a symbol")
 	case sym != "":
 		if _, ok := known[sym]; !ok {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,7 +51,10 @@ type Config struct {
 	TmuxSocket   string // tmux -L socket; empty = user's default server
 	Session      string
 	Claude       ClaudeOptions
-	InboxDir     string // runs write to InboxDir/<run id>/
+	JobModels    map[model.Job]string // per-job --model override
+	Jobs         []model.Job          // default model.DefaultJobs()
+	Megacaps     []string             // names batch when Jobs includes names_rest
+	InboxDir     string               // runs write to InboxDir/<run id>/
 	JobTimeout   time.Duration
 	MaxItems     int
 	Location     *time.Location
@@ -86,6 +90,9 @@ func New(cfg Config, cmd Commander) Runner {
 	}
 	if cfg.JobTimeout <= 0 {
 		cfg.JobTimeout = DefaultJobTimeout
+	}
+	if len(cfg.Jobs) == 0 {
+		cfg.Jobs = model.DefaultJobs()
 	}
 	return Runner{
 		cfg:      cfg,
@@ -134,7 +141,7 @@ func (r Runner) Run(ctx context.Context, runID int64, now time.Time, instruments
 		return nil, err
 	}
 
-	jobs := model.Jobs()
+	jobs := slices.Clone(r.cfg.Jobs)
 	results := make([]Result, len(jobs))
 	var wg sync.WaitGroup
 	for i, job := range jobs {
@@ -165,7 +172,7 @@ func (r Runner) runJob(ctx context.Context, runID int64, dir string, job model.J
 
 // startJob writes the prompt and script and opens the job's tmux window.
 func (r Runner) startJob(ctx context.Context, runID int64, dir string, job model.Job, now time.Time, instruments []model.Instrument) error {
-	prompt, err := RenderPrompt(PromptInput{Job: job, Instruments: instruments, Now: now, Location: r.cfg.Location, MaxItems: r.cfg.MaxItems})
+	prompt, err := RenderPrompt(PromptInput{Job: job, Instruments: r.instrumentsFor(job, instruments), Now: now, Location: r.cfg.Location, MaxItems: r.cfg.MaxItems})
 	if err != nil {
 		return err
 	}
@@ -177,7 +184,7 @@ func (r Runner) startJob(ctx context.Context, runID int64, dir string, job model
 		return fmt.Errorf("write %s prompt: %w", job, err)
 	}
 	script := filepath.Join(dir, f.script)
-	if err := os.WriteFile(script, []byte(buildScript(job, runID, dir, r.cfg.Claude)), 0o700); err != nil {
+	if err := os.WriteFile(script, []byte(buildScript(job, runID, dir, r.claudeFor(job))), 0o700); err != nil {
 		return fmt.Errorf("write %s script: %w", job, err)
 	}
 	if err := r.clearWindow(ctx, job); err != nil {
@@ -209,6 +216,41 @@ func (r Runner) termPaneGroup(ctx context.Context, job model.Job) {
 	if pid, err := r.tmux.panePID(ctx, r.cfg.Session, string(job)); err == nil && pid > 1 {
 		_ = syscall.Kill(-pid, syscall.SIGTERM)
 	}
+}
+
+// claudeFor applies the job's model override.
+func (r Runner) claudeFor(job model.Job) ClaudeOptions {
+	o := r.cfg.Claude
+	if m := r.cfg.JobModels[job]; m != "" {
+		o.Model = m
+	}
+	return o
+}
+
+// instrumentsFor narrows the watchlist for split names batches: names gets
+// the megacaps, names_rest the others. Without a split every job sees all.
+func (r Runner) instrumentsFor(job model.Job, all []model.Instrument) []model.Instrument {
+	if !job.IsNames() || !slices.Contains(r.cfg.Jobs, model.JobNamesRest) {
+		return all
+	}
+	wantMega := job == model.JobNames
+	out := make([]model.Instrument, 0, len(all))
+	for _, in := range all {
+		if slices.Contains(r.cfg.Megacaps, in.Symbol) == wantMega {
+			out = append(out, in)
+		}
+	}
+	return out
+}
+
+// KillSession ends the agents' tmux session (kill_agents_on_quit, or
+// -kill-agents). A missing session or server is not an error.
+func (r Runner) KillSession(ctx context.Context) error {
+	if _, err := r.tmux.run(ctx, "has-session", "-t", "="+r.cfg.Session); err != nil {
+		return nil
+	}
+	_, err := r.tmux.run(ctx, "kill-session", "-t", "="+r.cfg.Session)
+	return err
 }
 
 // clearStale removes result files from an earlier attempt of the same run so

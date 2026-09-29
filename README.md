@@ -35,6 +35,7 @@ Other entry points:
 | `swingdesk -insert-sample` | insert placeholder items so the UI is usable without agents |
 | `swingdesk -ingest file.json` | ingest one agent JSON file |
 | `swingdesk -paths` | print config / data paths |
+| `swingdesk -kill-agents` | kill the agents' tmux session |
 | `swingdesk -config path.yaml` | use a specific config file |
 
 ## Keys
@@ -60,6 +61,8 @@ Other entry points:
 `~/.config/swingdesk/config.yaml` (or `$XDG_CONFIG_HOME`, or `$SWINGDESK_CONFIG`). Every key is optional; see [docs/config.example.yaml](docs/config.example.yaml).
 
 Data lives in `~/.local/share/swingdesk/` (`swingdesk.db`, `inbox/`, `runs/`, `swingdesk.log`).
+
+Cost controls (all off by default): `market_hours` (scheduled refreshes only during US/EU hours, optional premarket), `split_names` (names job in two batches: megacaps / rest), `claude_job_models` (e.g. `{tech: haiku}`), `kill_agents_on_quit`.
 
 Agents run `claude -p` with only `WebSearch,WebFetch`, `--safe-mode`, `--permission-mode dontAsk` and no `--model` unless you set `claude_model`. `--dangerously-skip-permissions` is an explicit opt-in (`claude_dangerously_skip_permissions: true`).
 

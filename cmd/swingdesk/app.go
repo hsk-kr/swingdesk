@@ -79,8 +79,12 @@ func (a *app) Close() {
 	}
 }
 
-func (a *app) refresher() refresh.Refresher {
-	runner := agent.New(agent.Config{
+func (a *app) runner() agent.Runner {
+	models := make(map[model.Job]string, len(a.cfg.ClaudeJobModels))
+	for job := range a.cfg.ClaudeJobModels {
+		models[job] = a.cfg.ModelFor(job)
+	}
+	return agent.New(agent.Config{
 		Session: a.cfg.TmuxSession,
 		Claude: agent.ClaudeOptions{
 			Bin:             a.cfg.ClaudeBin,
@@ -89,14 +93,20 @@ func (a *app) refresher() refresh.Refresher {
 			SkipPermissions: a.cfg.ClaudeSkipPermissions,
 			MaxBudgetUSD:    a.cfg.ClaudeMaxBudgetUSD,
 		},
+		JobModels:  models,
+		Jobs:       a.cfg.Jobs(),
+		Megacaps:   a.cfg.MegacapSymbols,
 		InboxDir:   a.paths.InboxDir,
 		JobTimeout: a.cfg.JobTimeout(),
 		MaxItems:   a.cfg.MaxItemsPerJob,
 		Location:   a.tz,
 	}, agent.ExecCommander{})
+}
+
+func (a *app) refresher() refresh.Refresher {
 	return refresh.New(refresh.Deps{
-		Conn: a.conn, Runner: runner, InboxDir: a.paths.InboxDir, RunsDir: a.paths.RunsDir,
-		LockPath: filepath.Join(a.paths.DataDir, "refresh.lock"),
+		Conn: a.conn, Runner: a.runner(), InboxDir: a.paths.InboxDir, RunsDir: a.paths.RunsDir,
+		LockPath: filepath.Join(a.paths.DataDir, "refresh.lock"), Jobs: a.cfg.Jobs(),
 		MaxItems: a.cfg.MaxItemsPerJob, Logger: a.logger,
 	})
 }
@@ -110,8 +120,12 @@ func (a *app) runUI(start startUI) error {
 	if err != nil {
 		return err
 	}
+	gate, err := refresh.NewHours(a.cfg.MarketHours)
+	if err != nil {
+		return err
+	}
 	r := a.refresher()
-	return start(ui.New(ui.Options{
+	uiErr := start(ui.New(ui.Options{
 		Store:       db.NewStore(a.conn),
 		Instruments: a.instruments,
 		Location:    a.tz,
@@ -119,10 +133,28 @@ func (a *app) runUI(start startUI) error {
 		TmuxSession: a.cfg.TmuxSession,
 		Status:      status,
 		Copy:        tmuxCopier(os.Getenv),
+		Jobs:        a.cfg.Jobs(),
+		Gate:        gate,
 		Refresh: func(progress func(model.Job)) refresh.Outcome {
 			return r.Refresh(ctx, func(res agent.Result) { progress(res.Job) })
 		},
 	}))
+	if a.cfg.KillAgentsOnQuit {
+		cancel()
+		if err := a.runner().KillSession(context.Background()); err != nil {
+			return errors.Join(uiErr, fmt.Errorf("kill agents: %w", err))
+		}
+	}
+	return uiErr
+}
+
+// killAgents ends the agents' tmux session (-kill-agents).
+func (a *app) killAgents(ctx context.Context, out io.Writer) error {
+	if err := a.runner().KillSession(ctx); err != nil {
+		return fmt.Errorf("kill agents: %w", err)
+	}
+	fmt.Fprintf(out, "killed tmux session %s (if it was running)\n", a.cfg.TmuxSession)
+	return nil
 }
 
 // tmuxCopier returns a clipboard path for use inside tmux: `load-buffer -w`

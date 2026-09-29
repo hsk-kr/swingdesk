@@ -11,3 +11,13 @@ claude_max_budget_usd: 0          # per job; 0 = no --max-budget-usd cap
 job_timeout_minutes: 8            # a job past this is killed and marked failed
 max_items_per_job: 40
 data_dir: ""                      # empty = $XDG_DATA_HOME/swingdesk or ~/.local/share/swingdesk
+
+# --- Cost controls (all off by default) ---
+market_hours:
+  enabled: false        # true: scheduled refreshes only during exchange hours (R still works)
+  premarket: false      # start at 04:00 ET / 07:00 London instead of the open
+  sessions: [us, eu]    # us = 09:30-16:00 America/New_York, eu = 08:00-16:30 Europe/London; weekdays, no holidays
+split_names: false      # true: names job becomes two batches (megacaps + the rest)
+megacap_symbols: [GOOG, GOOGL, AMZN, AAPL, MSFT, META, NVDA, TSLA]
+claude_job_models: {}   # per-job --model, e.g. {tech: haiku, market: haiku}; jobs: market, tech, names, names_rest
+kill_agents_on_quit: false  # true: kill the tmux session when the TUI quits (default keeps late agents running)

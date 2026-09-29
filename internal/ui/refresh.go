@@ -40,7 +40,7 @@ func defaultTick() tea.Cmd {
 // goroutine never blocks on a slow UI.
 func runRefresh(fn RefreshFunc) tea.Cmd {
 	return func() tea.Msg {
-		ch := make(chan tea.Msg, len(model.Jobs())*2+1)
+		ch := make(chan tea.Msg, len(model.Jobs())*2+1) // every known job, so any config fits
 		go func() {
 			defer close(ch)
 			out := fn(func(j model.Job) { ch <- jobDoneMsg{job: j, ch: ch} })
@@ -94,10 +94,12 @@ func (m Model) decide(d refresh.Decision) (Model, tea.Cmd) {
 	m.status.NextRefresh = m.sched.Next()
 	switch d {
 	case refresh.Start:
-		m.status.Agents = model.AgentStatus{State: model.AgentRunning, Running: model.Jobs()}
+		m.status.Agents = model.AgentStatus{State: model.AgentRunning, Running: slices.Clone(m.jobs)}
 		return m, runRefresh(m.refresh)
 	case refresh.Skipped:
 		m.notice = "refresh skipped: previous run still running"
+	case refresh.Closed:
+		m.notice = "outside market hours · next refresh " + m.fmtDateTimeOr(m.sched.Next(), "—") + " · R refreshes now"
 	}
 	return m, nil
 }

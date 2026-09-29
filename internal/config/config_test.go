@@ -2,7 +2,10 @@ package config
 
 import (
 	"os"
+
+	"github.com/hsk-kr/swingdesk/internal/model"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -92,6 +95,10 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		"bypass mode":     "claude_permission_mode: bypassPermissions\n",
 		"dotted session":  "tmux_session: sw.desk\n",
 		"items over cap":  "max_items_per_job: 41\n",
+		"bad job model":   "claude_job_models: {macro: haiku}\n",
+		"bad session":     "market_hours: {enabled: true, sessions: [asia]}\n",
+		"no sessions":     "market_hours: {enabled: true, sessions: []}\n",
+		"split no caps":   "split_names: true\nmegacap_symbols: []\n",
 		"stale default":   "claude_permission_mode: default\n",
 		"zero timeout":    "job_timeout_minutes: 0\n",
 		"negative budget": "claude_max_budget_usd: -1\n",
@@ -126,7 +133,7 @@ func TestLoadEmptyAndCommentOnlyFiles(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Load: %v", err)
 			}
-			if cfg != Defaults() {
+			if !reflect.DeepEqual(cfg, Defaults()) {
 				t.Errorf("cfg = %+v, want defaults", cfg)
 			}
 		})
@@ -227,4 +234,29 @@ func TestResolvePathsAllFields(t *testing.T) {
 
 func mapEnv(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
+}
+
+func TestCostControls(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, p, "claude_model: opus\nclaude_job_models: {tech: haiku}\nsplit_names: true\nmarket_hours: {enabled: true, premarket: true, sessions: [us]}\nkill_agents_on_quit: true\n")
+	cfg, err := Load(Location{Path: p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ModelFor(model.JobTech) != "haiku" || cfg.ModelFor(model.JobNames) != "opus" {
+		t.Errorf("models: tech=%q names=%q", cfg.ModelFor(model.JobTech), cfg.ModelFor(model.JobNames))
+	}
+	if got := cfg.Jobs(); len(got) != 4 || got[3] != model.JobNamesRest {
+		t.Errorf("jobs = %v", got)
+	}
+	if !cfg.MarketHours.Enabled || !cfg.MarketHours.Premarket || len(cfg.MarketHours.Sessions) != 1 || !cfg.KillAgentsOnQuit {
+		t.Errorf("cfg = %+v", cfg)
+	}
+	if len(cfg.MegacapSymbols) != 8 {
+		t.Errorf("megacaps default lost: %v", cfg.MegacapSymbols)
+	}
+	d := Defaults()
+	if len(d.Jobs()) != 3 || d.MarketHours.Enabled || d.SplitNames || d.KillAgentsOnQuit {
+		t.Error("cost controls must default off")
+	}
 }

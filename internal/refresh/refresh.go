@@ -24,9 +24,10 @@ type JobRunner interface {
 type Deps struct {
 	Conn     *sql.DB
 	Runner   JobRunner
-	InboxDir string // data_dir/inbox
-	RunsDir  string // data_dir/runs (ingested files are archived here)
-	LockPath string // data_dir/refresh.lock
+	InboxDir string      // data_dir/inbox
+	RunsDir  string      // data_dir/runs (ingested files are archived here)
+	LockPath string      // data_dir/refresh.lock
+	Jobs     []model.Job // jobs per refresh (default model.DefaultJobs())
 	MaxItems int
 	Now      func() time.Time
 	Logger   *slog.Logger // ingest skips and leftover failures; nil = discard
@@ -42,6 +43,9 @@ func New(d Deps) Refresher {
 	}
 	if d.Logger == nil {
 		d.Logger = slog.New(slog.DiscardHandler)
+	}
+	if len(d.Jobs) == 0 {
+		d.Jobs = model.DefaultJobs()
 	}
 	return Refresher{d: d}
 }
@@ -120,7 +124,7 @@ func (r Refresher) finish(ctx context.Context, out Outcome, runErr error) Outcom
 		}
 		msgs = append(msgs, fmt.Sprintf("%s: %v", j.Job, j.Err))
 	}
-	total := len(model.Jobs())
+	total := len(r.d.Jobs)
 	out.Status = model.RunStatusFor(ok, total)
 	out.Err = runErr
 	run := db.Run{ID: out.RunID, FinishedAt: r.d.Now(), Status: out.Status, Error: strings.Join(msgs, "; "), JobsOK: ok, JobsFail: total - ok}

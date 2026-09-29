@@ -47,7 +47,7 @@ func (f fakeRunner) Run(ctx context.Context, runID int64, _ time.Time, instrumen
 		return nil, err
 	}
 	var out []agent.Result
-	for _, job := range model.Jobs() {
+	for _, job := range model.DefaultJobs() {
 		if err := f.fail[job]; err != nil {
 			out = append(out, agent.Result{Job: job, Err: err})
 			continue
@@ -126,7 +126,7 @@ func TestRefreshOK(t *testing.T) {
 	if status != "ok" || ok != 3 || fail != 0 {
 		t.Errorf("row = %s %d %d", status, ok, fail)
 	}
-	for _, job := range model.Jobs() {
+	for _, job := range model.DefaultJobs() {
 		if _, err := os.Stat(filepath.Join(e.runs, strconv.FormatInt(out.RunID, 10), string(job)+".json")); err != nil {
 			t.Errorf("%s not archived: %v", job, err)
 		}
@@ -249,7 +249,7 @@ func TestLeftoverFromUnknownRunDirIngestsWithoutRun(t *testing.T) {
 
 func TestSchedule(t *testing.T) {
 	t0 := now
-	s := NewSchedule(30 * time.Minute)
+	s := NewSchedule(30*time.Minute, nil)
 	s, d := s.Tick(t0)
 	if d != Start || !s.Running() || !s.Next().Equal(t0.Add(30*time.Minute)) {
 		t.Fatalf("first tick = %v next %v", d, s.Next())
@@ -300,7 +300,7 @@ func TestTransientIngestErrorKeepsFileForRetry(t *testing.T) {
 		t.Fatalf("status = %s", out.Status)
 	}
 	id := strconv.FormatInt(out.RunID, 10)
-	for _, job := range model.Jobs() {
+	for _, job := range model.DefaultJobs() {
 		if _, err := os.Stat(filepath.Join(e.inbox, id, string(job)+".json")); err != nil {
 			t.Errorf("%s: valid file must stay in the inbox: %v", job, err)
 		}

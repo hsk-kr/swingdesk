@@ -32,7 +32,7 @@ func instruments(t *testing.T) []model.Instrument {
 
 func TestRenderPromptInjectsWatchlistAndNow(t *testing.T) {
 	london, _ := time.LoadLocation("Europe/London")
-	for _, job := range model.Jobs() {
+	for _, job := range model.DefaultJobs() {
 		out, err := RenderPrompt(PromptInput{Job: job, Instruments: instruments(t), Now: testNow, Location: london, MaxItems: 40})
 		if err != nil {
 			t.Fatalf("%s: %v", job, err)
@@ -275,7 +275,7 @@ func TestRunInTmuxTimesOutAndKills(t *testing.T) {
 	if err != nil || w.exists {
 		t.Errorf("timed-out window should be killed: exists=%v err=%v", w.exists, err)
 	}
-	for _, job := range model.Jobs() {
+	for _, job := range model.DefaultJobs() {
 		raw, err := os.ReadFile(filepath.Join(r.RunDir(1), "hang."+string(job)+".pid"))
 		if err != nil {
 			t.Fatalf("%s pid: %v", job, err)
@@ -297,7 +297,7 @@ func TestBusyJobIsNotReplaced(t *testing.T) {
 		_, _ = r.Run(ctx, 1, testNow, instruments(t), nil)
 	}()
 	if !eventually(5*time.Second, func() bool {
-		for _, job := range model.Jobs() {
+		for _, job := range model.DefaultJobs() {
 			if _, err := os.Stat(filepath.Join(r.RunDir(1), "hang."+string(job)+".pid")); err != nil {
 				return false
 			}
@@ -358,7 +358,7 @@ func runHanging(t *testing.T, r Runner) <-chan []Result {
 		done <- res
 	}()
 	if !eventually(5*time.Second, func() bool {
-		for _, job := range model.Jobs() {
+		for _, job := range model.DefaultJobs() {
 			if _, err := os.Stat(filepath.Join(r.RunDir(1), "hang."+string(job)+".pid")); err != nil {
 				return false
 			}
@@ -403,7 +403,7 @@ func TestPaneKilledWithoutExitFileFailsFast(t *testing.T) {
 	r := tmuxRunner(t, fakeClaude(t, "hang"), 20*time.Second)
 	done := runHanging(t, r)
 	start := time.Now()
-	for _, job := range model.Jobs() {
+	for _, job := range model.DefaultJobs() {
 		pid, err := r.tmux.panePID(context.Background(), "sdtest", string(job))
 		if err != nil {
 			t.Fatal(err)
@@ -482,4 +482,72 @@ func TestOrphanedAgentOlderThanTimeoutIsReplaced(t *testing.T) {
 		}
 	}
 	<-done // run 1 observes its panes dying
+}
+
+func TestSplitNamesInstrumentsAndModels(t *testing.T) {
+	ins := instruments(t)
+	r := New(Config{
+		Jobs:      []model.Job{model.JobMarket, model.JobTech, model.JobNames, model.JobNamesRest},
+		Megacaps:  []string{"NVDA", "MSFT"},
+		Claude:    ClaudeOptions{Bin: "claude", Model: "opus"},
+		JobModels: map[model.Job]string{model.JobTech: "haiku"},
+	}, ExecCommander{})
+	syms := func(in []model.Instrument) []string {
+		out := []string{}
+		for _, i := range in {
+			out = append(out, i.Symbol)
+		}
+		return out
+	}
+	mega := syms(r.instrumentsFor(model.JobNames, ins))
+	if strings.Join(mega, ",") != "MSFT,NVDA" {
+		t.Errorf("names batch = %v", mega)
+	}
+	rest := syms(r.instrumentsFor(model.JobNamesRest, ins))
+	if len(rest) != len(ins)-2 || strings.Contains(strings.Join(rest, ","), "NVDA") {
+		t.Errorf("names_rest batch = %v", rest)
+	}
+	if got := r.instrumentsFor(model.JobMarket, ins); len(got) != len(ins) {
+		t.Error("market sees the whole watchlist")
+	}
+	if r.claudeFor(model.JobTech).Model != "haiku" || r.claudeFor(model.JobNames).Model != "opus" {
+		t.Error("per-job model override wrong")
+	}
+	noSplit := New(Config{Megacaps: []string{"NVDA"}}, ExecCommander{})
+	if len(noSplit.instrumentsFor(model.JobNames, ins)) != len(ins) {
+		t.Error("without a split, names sees everything")
+	}
+}
+
+func TestRenderNamesRestUsesNamesTemplate(t *testing.T) {
+	out, err := RenderPrompt(PromptInput{Job: model.JobNamesRest, Instruments: instruments(t), Now: testNow, MaxItems: 40})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "research desk") || !strings.Contains(out, "`job` set to `names_rest`") {
+		t.Errorf("prompt:\n%s", out)
+	}
+}
+
+func TestKillSession(t *testing.T) {
+	r := tmuxRunner(t, fakeClaude(t, "hang"), 20*time.Second)
+	if err := r.KillSession(context.Background()); err != nil {
+		t.Fatalf("no session yet: %v", err)
+	}
+	done := runHanging(t, r)
+	if err := r.KillSession(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	for _, res := range <-done {
+		if !errors.Is(res.Err, ErrJobDied) {
+			t.Errorf("%s: err = %v, want ErrJobDied", res.Job, res.Err)
+		}
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Error("killed session should be noticed promptly, not at the timeout")
+	}
+	if err := exec.Command("tmux", "-L", r.cfg.TmuxSocket, "has-session", "-t", "=sdtest").Run(); err == nil {
+		t.Error("session should be gone")
+	}
 }
