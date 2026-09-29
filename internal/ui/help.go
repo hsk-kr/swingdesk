@@ -83,8 +83,22 @@ func overlay(base, modal string, width int) string {
 		if y+i >= len(out) {
 			break
 		}
-		row := out[y+i]
-		out[y+i] = ansi.Truncate(row, x, "") + l + ansi.TruncateLeft(row, x+mw, "")
+		out[y+i] = spliceRow(out[y+i], l, x, mw, width)
 	}
 	return strings.Join(out, "\n")
+}
+
+// spliceRow replaces cells [x, x+mw) of row with l, keeping the row exactly
+// width cells even when a double-width character straddles either edge
+// (the straddling character is replaced by spaces).
+func spliceRow(row, l string, x, mw, width int) string {
+	left := ansi.Truncate(row, x, "")
+	left += strings.Repeat(" ", max(x-ansi.StringWidth(left), 0))
+	want := max(width-x-mw, 0)
+	right := ansi.TruncateLeft(row, x+mw, "")
+	if ansi.StringWidth(right) > want {
+		// A wide char straddles the cut; the next cell is a boundary.
+		right = ansi.TruncateLeft(row, x+mw+1, "")
+	}
+	return left + l + strings.Repeat(" ", max(want-ansi.StringWidth(right), 0)) + right
 }

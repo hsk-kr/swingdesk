@@ -188,6 +188,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.onRefreshDone(msg.out)
 	case copiedMsg:
 		return m.onCopied(msg)
+	case tea.PasteMsg:
+		return m.onPaste(msg)
 	case tea.KeyPressMsg:
 		if !m.typing {
 			m.notice, m.noticeErr = "", false

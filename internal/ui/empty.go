@@ -1,8 +1,10 @@
 package ui
 
 import (
+	"errors"
 	"strings"
 
+	"github.com/hsk-kr/swingdesk/internal/agent"
 	"github.com/hsk-kr/swingdesk/internal/model"
 	"github.com/hsk-kr/swingdesk/internal/refresh"
 )
@@ -37,27 +39,34 @@ func (m Model) waitingLines() []string {
 	return lines
 }
 
-// authHints are substrings Claude Code prints when it cannot authenticate.
-var authHints = []string{"not logged in", "/login", "invalid api key", "authentication", "oauth token"}
+// authHints are phrases Claude Code itself prints when it cannot
+// authenticate. They are matched only against claude's own output (exit
+// errors), never against ingest errors that quote the model's prose.
+var authHints = []string{"not logged in", "please run /login", "invalid api key", "authentication_error", "oauth token has expired"}
 
 // isAuthProblem reports whether a refresh failed because claude is not
-// logged in.
+// logged in: at least one job failed and every failed job is a claude exit
+// whose own message is an auth failure.
 func isAuthProblem(out refresh.Outcome) bool {
-	texts := []string{}
-	if out.Err != nil {
-		texts = append(texts, out.Err.Error())
-	}
+	failed := 0
 	for _, j := range out.Jobs {
-		if j.Err != nil {
-			texts = append(texts, j.Err.Error())
+		if j.Err == nil {
+			continue
+		}
+		failed++
+		var exitErr *agent.ExitError
+		if !errors.As(j.Err, &exitErr) || !hasAuthHint(exitErr.Stderr) {
+			return false
 		}
 	}
-	for _, t := range texts {
-		t = strings.ToLower(t)
-		for _, h := range authHints {
-			if strings.Contains(t, h) {
-				return true
-			}
+	return failed > 0
+}
+
+func hasAuthHint(s string) bool {
+	s = strings.ToLower(s)
+	for _, h := range authHints {
+		if strings.Contains(s, h) {
+			return true
 		}
 	}
 	return false

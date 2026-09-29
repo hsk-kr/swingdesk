@@ -1,7 +1,9 @@
 package ui
 
 import (
+	"slices"
 	"strings"
+	"unicode"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -34,12 +36,34 @@ func (m Model) handleQueryKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// setQuery re-derives the visible rows for q.
+// setQuery re-derives the visible rows for q, keeping the selected item
+// when it is still shown (else the top row).
 func (m Model) setQuery(q string) Model {
+	prev, hadPrev := m.Selected()
 	m.query = q
 	m.itemCursor = 0
 	m.detailScroll = 0
-	return m.setItems(m.items)
+	m = m.setItems(m.items)
+	if hadPrev {
+		if i := slices.IndexFunc(m.visible, func(it model.Item) bool { return it.ID == prev.ID }); i >= 0 {
+			m.itemCursor = i
+		}
+	}
+	return m
+}
+
+// onPaste appends pasted text (bracketed paste) to the query while typing.
+func (m Model) onPaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
+	if !m.typing {
+		return m, nil
+	}
+	clean := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, msg.Content)
+	return m.setQuery(m.query + clean), nil
 }
 
 // matchQuery keeps items whose title or symbol contains q (case-insensitive).

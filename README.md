@@ -8,7 +8,7 @@ The TUI is a Go binary. On startup and every 30 minutes while it is running, it 
 - broader stock-market news
 - per-name research for a watchlist (today's news, upcoming events, expert opinions, company value / setup)
 
-Results land in SQLite. The UI shows **unread items only**. You mark an item read with a keypress and it disappears from the inbox.
+Results land in SQLite. The UI shows **unread items only** by default (press `s` to include read items). You mark an item read with a keypress and it disappears from the inbox.
 
 > Stances are a research hint, not financial advice.
 

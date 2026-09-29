@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/hsk-kr/swingdesk/internal/agent"
 	"github.com/hsk-kr/swingdesk/internal/model"
@@ -189,20 +190,38 @@ func TestClaudeNotLoggedInState(t *testing.T) {
 	}
 }
 
+func exitErr(job model.Job, stderr string) error {
+	return &agent.ExitError{Job: job, Code: 1, Stderr: stderr}
+}
+
 func TestIsAuthProblem(t *testing.T) {
-	cases := map[string]bool{
-		"Invalid API key · Please run /login": true,
-		"OAuth token has expired":             true,
-		"job timed out":                       false,
+	auth := "Invalid API key · Please run /login"
+	cases := []struct {
+		name string
+		jobs []refresh.JobOutcome
+		want bool
+	}{
+		{"all failed on auth", []refresh.JobOutcome{
+			{Job: model.JobMarket, Err: exitErr(model.JobMarket, auth)},
+			{Job: model.JobTech, Err: exitErr(model.JobTech, "OAuth token has expired")},
+			{Job: model.JobNames, Err: exitErr(model.JobNames, "Not logged in")},
+		}, true},
+		{"one job ok, one auth", []refresh.JobOutcome{
+			{Job: model.JobMarket}, {Job: model.JobTech, Err: exitErr(model.JobTech, auth)},
+		}, true},
+		{"mixed failure kinds", []refresh.JobOutcome{
+			{Job: model.JobTech, Err: exitErr(model.JobTech, auth)}, {Job: model.JobNames, Err: agent.ErrJobTimeout},
+		}, false},
+		{"model prose about auth in ingest error", []refresh.JobOutcome{
+			{Job: model.JobTech, Err: errors.New("claude result contains no JSON object: Okta reported an authentication outage; see https://x/login")},
+		}, false},
+		{"exit error unrelated", []refresh.JobOutcome{{Job: model.JobTech, Err: exitErr(model.JobTech, "fetch https://site/login failed")}}, false},
+		{"no failures", []refresh.JobOutcome{{Job: model.JobTech}}, false},
 	}
-	for msg, want := range cases {
-		out := refresh.Outcome{Jobs: []refresh.JobOutcome{{Job: model.JobTech, Err: errors.New(msg)}}}
-		if got := isAuthProblem(out); got != want {
-			t.Errorf("%q = %v", msg, got)
+	for _, c := range cases {
+		if got := isAuthProblem(refresh.Outcome{Jobs: c.jobs}); got != c.want {
+			t.Errorf("%s = %v", c.name, got)
 		}
-	}
-	if isAuthProblem(refresh.Outcome{}) {
-		t.Error("empty outcome is not an auth problem")
 	}
 }
 
@@ -227,5 +246,69 @@ func TestAllJobsFailedShowsAgentError(t *testing.T) {
 	}
 	if agentStatusFor(refresh.Outcome{Status: model.RunError}).Err != "all jobs failed" {
 		t.Error("fallback text")
+	}
+}
+
+func TestHelpOverlayWithWideCharactersKeepsFrame(t *testing.T) {
+	var items []model.Item
+	for i := range 10 {
+		items = append(items, model.Item{ID: int64(i + 1), InstrumentID: 1, Symbol: "SKHY", Category: model.CategoryNews,
+			Title: strings.Repeat("삼성전자 반도체 뉴스 ", 12), URL: "https://x", CreatedAt: testNow.Add(-time.Duration(i) * time.Minute)})
+	}
+	for _, sz := range [][2]int{{99, 14}, {99, 20}, {120, 40}, {61, 15}, {100, 31}} {
+		m := newModelWith(t, newFakeStore(items, nil), testInstruments(), sz[0], sz[1])
+		assertFrame(t, press(t, m, "?"), sz[0], sz[1])
+	}
+}
+
+func TestSpliceRowStraddlingWideChars(t *testing.T) {
+	row := "가나다라마바사아" // 16 cells
+	for x := 0; x <= 6; x++ {
+		got := spliceRow(row, "XX", x, 2, 16)
+		if w := ansi.StringWidth(got); w != 16 {
+			t.Errorf("x=%d width %d: %q", x, w, got)
+		}
+		if !strings.Contains(got, "XX") {
+			t.Errorf("x=%d lost modal: %q", x, got)
+		}
+	}
+}
+
+func TestPasteIntoQuery(t *testing.T) {
+	m := newTestModel(t, 120, 40)
+	next, _ := m.Update(tea.PasteMsg{Content: "nvda\n"})
+	if next.(Model).query != "" {
+		t.Error("paste outside typing mode must be ignored")
+	}
+	m = press(t, m, "/")
+	next, _ = m.Update(tea.PasteMsg{Content: "nvda\n"})
+	m = next.(Model)
+	if m.query != "nvda" || len(m.visible) != 1 {
+		t.Errorf("query = %q visible = %d", m.query, len(m.visible))
+	}
+}
+
+func TestClearingQueryKeepsSelection(t *testing.T) {
+	m := newTestModel(t, 120, 40)
+	m = press(t, m, "/")
+	m = typeText(t, m, "TSLA")
+	m = press(t, m, "enter", "esc")
+	if sel, _ := m.Selected(); sel.Symbol != "TSLA" {
+		t.Errorf("selection = %+v", sel)
+	}
+}
+
+func TestShowReadWithUndo(t *testing.T) {
+	m, store := newTestModelStore(t, 120, 40)
+	m = press(t, m, "s", "r")
+	if len(store.readIDs()) != 1 || len(m.visible) != 10 {
+		t.Fatalf("read=%v visible=%d", store.readIDs(), len(m.visible))
+	}
+	m = press(t, m, "u")
+	if len(store.readIDs()) != 0 || len(m.visible) != 10 || strings.Contains(plain(m), "✓") {
+		t.Errorf("after undo: read=%v", store.readIDs())
+	}
+	if m.counts.Total != 10 {
+		t.Errorf("total = %d", m.counts.Total)
 	}
 }

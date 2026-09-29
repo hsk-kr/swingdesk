@@ -47,7 +47,7 @@ Keys (v1):
 | `?` | help |
 | `q` | quit |
 
-Default filter: unread only. No "show read" toggle in v1 unless it is one key (`s`) that is off by default.
+Default filter: unread only. `s` toggles read items on (off by default).
 
 ## Stack
 
@@ -204,7 +204,7 @@ Match the GitHub issues:
 | Timezone | `Europe/London` |
 | Treat GOOG + GOOGL as one name or two? | Two instruments, same company tag `alphabet` so news can attach to both |
 | Refresh when the TUI is closed? | No, v1 is in-process only |
-| Show read items? | Hidden in v1 |
-| Auto-open sources in browser? | Not v1; copy URL with `c` later |
+| Show read items? | Hidden by default; `s` toggles |
+| Auto-open sources in browser? | Not v1; `c` copies the URL (OSC 52) |
 | Market-hours-only refresh? | No, always 30 min while running |
 | Kill tmux on quit? | No |
